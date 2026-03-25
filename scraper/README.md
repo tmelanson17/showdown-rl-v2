@@ -70,6 +70,5 @@ See [SCHEDULED_TASK.md](SCHEDULED_TASK.md) for instructions on setting up a Wind
 
 ## Known limitations
 
-- Replays with `rating: null` pass through the `--min-elo` filter (the API omits the field for unrated games).
 - The continuous polling loop (`--interval` without `--once`) is not yet implemented; use a scheduled task or cron with `--once` instead.
 - The parser reconstructs state from HP deltas and move/switch events only — it does not capture full team rosters, held items, or intra-turn event ordering.

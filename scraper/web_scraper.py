@@ -523,8 +523,8 @@ def poll_new_battles(
             if rid in seen_ids:
                 continue  # already recorded (e.g. overlap window)
 
-            # Apply minimum ELO filter
-            if min_elo > 0 and rating is not None and rating < min_elo:
+            # Apply minimum ELO filter (treat None rating as 0)
+            if min_elo > 0 and (rating is None or rating < min_elo):
                 logger.debug(
                     "Skipping %s: rating %d < min_elo %d", rid, rating, min_elo
                 )
