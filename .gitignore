@@ -1,0 +1,35 @@
+# Data files
+*.json
+*.jsonl
+*.txt
+*.log
+*.zip
+*.html
+
+# Images / screenshots
+*.png
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# External fork
+model/FineTuningLLMs/
+
+# Generated/runtime data
+replays/
+recorded_games/
+showdown_env/recorded_games/
+showdown_env/llm_logs/
+teams/
+
+# Empty placeholder files
+player
+start
+
+# Claude Code
+.claude/
