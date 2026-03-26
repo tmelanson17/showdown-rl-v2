@@ -15,7 +15,7 @@ import random
 import string
 
 from game_runner import HumanGameRunner
-from model_agent import LLMModelAgent
+from model_agent import OllamaModelAgent, BERTModelAgent
 
 
 def main():
@@ -75,6 +75,12 @@ def main():
         default=None,
         help="Path to write LLM interaction log as .jsonl (default: disabled)",
     )
+    parser.add_argument(
+        "--team-index",
+        type=int,
+        default=None,
+        help="0-based index of built-in team to use (skips saved team files)",
+    )
 
     args = parser.parse_args()
 
@@ -98,7 +104,16 @@ def main():
 
     # Create agent factory
     def agent_factory(player_number, username):
-        return LLMModelAgent(
+        if args.model == "bert":
+            return BERTModelAgent(
+                player_number=player_number,
+                username=username,
+                battle_format=args.format,
+                ollama_url="http://tj-training.tail38a3b.ts.net:11435",
+                log_path=args.log_path,
+                team_index=args.team_index,
+            )
+        return OllamaModelAgent(
             player_number=player_number,
             username=username,
             battle_format=args.format,

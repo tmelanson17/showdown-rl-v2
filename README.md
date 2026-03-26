@@ -179,6 +179,28 @@ ssh tj-training.tail38a3b.ts.net "curl -s http://localhost:11435/api/tags"
 
 The server does **not** survive reboots — re-run the `nohup` command after each restart.
 
+**Testing the model server:**
+
+Send a raw prompt and verify the server returns a complete action line (not a partial span like bare `"move"` or `"switch"`):
+
+```bash
+ssh tj-training.tail38a3b.ts.net "curl -s -X POST http://localhost:11435/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"local-model\",\"prompt\":\"|switch|p1a: Salamence|Salamence, M|100/100\n|switch|p2a: Tyranitar|Tyranitar|100/100\n|turn|1\n\nAvailable actions:\n  MOVE: Dragon Dance\n  MOVE: Aerial Ace\n  MOVE: Earthquake\n  MOVE: Rock Slide\n  SWITCH: Magneton\n  SWITCH: Skarmory\",\"stream\":false}'"
+# Expected: {"model": "local-model", "response": "move <something>", "done": true}
+# NOT: {"response": "move"} — that would indicate broken span extraction
+```
+
+To verify the model is actually making context-sensitive decisions, use a known training data point where the correct answer is not the first option:
+
+```bash
+ssh tj-training.tail38a3b.ts.net "curl -s -X POST http://localhost:11435/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"local-model\",\"prompt\":\"|teamsize|p1|6\n|teamsize|p2|6\n|start\n|switch|p1a: Jirachi|Jirachi|100/100\n|switch|p2a: Lightning Chidori|Zapdos|100/100\n|turn|1\n\nAvailable actions:\n  MOVE: Baton Pass\n  MOVE: Hidden Power\n  MOVE: Substitute\n  MOVE: Thunderbolt\n  SWITCH: Dugtrio\n  SWITCH: Breloom\",\"stream\":false}'"
+# Expected: {"response": "move Substitute", "done": true}
+# (3rd option — confirms line-aligned span extraction, not just first-option fallback)
+```
+
 **Pointing an agent at the server:**
 
 ```python
@@ -236,11 +258,13 @@ Then in a browser, go to `http://localhost:8000`, log in as `<your-ps-username>`
 |---|---|---|
 | `--human` | `ctjn17` | PS username of the human player to challenge |
 | `--format` | `gen3ou` | Battle format |
-| `--model` | `llama3.2:latest` | Ollama model to use |
+| `--model` | `llama3.2:latest` | Ollama model name, or `bert` to use the local RoBERTa model on `tj-training:11435` |
 | `--bot-name` | auto (`LLMBotXXXXXX`) | Bot's PS username |
 | `--server` | `ws://localhost:8000/showdown/websocket` | PS server WebSocket URL |
 | `--timeout` | `1800` | Max wait time in seconds (default 30 min) |
-| `--ollama-url` | `http://localhost:11434` | Ollama API URL |
+| `--ollama-url` | `http://localhost:11434` | Ollama API URL (ignored when `--model bert`) |
+| `--log-path` | disabled | Write LLM interaction log as `.jsonl` for debugging |
+| `--team-index` | random | 0-based index of built-in team to use (bypasses saved team files) |
 | `--debug` | off | Enable verbose logging |
 
 **Example with all options:**

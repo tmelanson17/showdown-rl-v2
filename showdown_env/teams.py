@@ -179,8 +179,17 @@ class TeamManager:
         # For non-random formats, use sample teams
         return self.get_sample_team(format_id)
 
-    def get_sample_team(self, format_id: str = "gen9ou") -> str:
-        """Get a sample team for a format."""
+    def get_sample_team(self, format_id: str = "gen9ou", team_index: int | None = None) -> str:
+        """Get a sample team for a format.
+
+        Args:
+            format_id: Battle format string.
+            team_index: If set, return the built-in team at this 0-based index,
+                        bypassing any saved team files.
+        """
+        if team_index is not None:
+            return self._get_builtin_sample_team(format_id, team_index=team_index)
+
         # Check cache first
         if format_id in self._team_cache and self._team_cache[format_id]:
             return random.choice(self._team_cache[format_id])
@@ -198,7 +207,7 @@ class TeamManager:
         # Use built-in sample teams
         return self._get_builtin_sample_team(format_id)
 
-    def _get_builtin_sample_team(self, format_id: str) -> str:
+    def _get_builtin_sample_team(self, format_id: str, team_index: int | None = None) -> str:
         """Get a built-in sample team for testing."""
         # Sample teams by format in packed format
         teams_by_format = {
@@ -228,7 +237,7 @@ class TeamManager:
             "gen3ou": [
                 # Gen 3 OU Team 1: Classic SkarmBliss + Dragon Dance Tyranitar
                 "Tyranitar||leftovers|sandstream|dragondance,rockslide,earthquake,focuspunch|Adamant|40,252,,,,216|||||]"
-                "Skarmory||leftovers|keeneye|spikes,whirlwind,drillpeck,rest|Impish|252,,252,,4,|||||]"
+                "Skarmory||leftovers|keeneye|spikes,roar,drillpeck,rest|Impish|252,,252,,4,|||||]"
                 "Blissey||leftovers|naturalcure|aromatherapy,thunderwave,softboiled,seismictoss|Bold|252,,252,,4,|||||]"
                 "Swampert||leftovers|torrent|earthquake,icebeam,protect,toxic|Relaxed|252,,240,,16,|||||]"
                 "Jirachi||leftovers|serenegrace|calmmind,psychic,thunderbolt,substitute|Timid|,,,252,4,252|||||]"
@@ -237,7 +246,7 @@ class TeamManager:
                 "Salamence||leftovers|intimidate|dragondance,aerialace,earthquake,rockslide|Adamant|,252,4,,,252|||||]"
                 "Magneton||leftovers|magnetpull|thunderbolt,toxic,substitute,thunderwave|Modest|,,,252,4,252|||||]"
                 "Swampert||leftovers|torrent|earthquake,icebeam,hydropump,toxic|Relaxed|252,,216,,40,|||||]"
-                "Skarmory||leftovers|keeneye|spikes,whirlwind,drillpeck,rest|Impish|252,,252,,4,|||||]"
+                "Skarmory||leftovers|keeneye|spikes,roar,drillpeck,rest|Impish|252,,252,,4,|||||]"
                 "Celebi||leftovers|naturalcure|calmmind,psychic,gigadrain,recover|Bold|252,,216,,40,|||||]"
                 "Gengar||leftovers|levitate|thunderbolt,icepunch,willowisp,destinybond|Timid|,,,252,4,252|||||",
                 # Gen 3 OU Team 3: Mixed Attacker Offense
@@ -252,14 +261,15 @@ class TeamManager:
 
         # Get teams for the format, fall back to gen9ou if not found
         format_key = format_id.lower()
-        if format_key in teams_by_format:
-            return random.choice(teams_by_format[format_key])
+        team_list = teams_by_format.get(format_key, teams_by_format["gen9ou"])
+        if format_key not in teams_by_format:
+            logger.warning(
+                "TeamManager: No built-in teams for format %s, using gen9ou", format_id
+            )
 
-        # Default to gen9ou teams
-        logger.warning(
-            "TeamManager: No built-in teams for format %s, using gen9ou", format_id
-        )
-        return random.choice(teams_by_format["gen9ou"])
+        if team_index is not None:
+            return team_list[team_index % len(team_list)]
+        return random.choice(team_list)
 
     def load_teams_from_smogon_sets(self, format_id: str = "gen9ou") -> List[str]:
         """

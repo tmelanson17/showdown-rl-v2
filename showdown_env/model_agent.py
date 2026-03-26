@@ -1,11 +1,20 @@
 """
-model_agent.py — LLM-based agent for Pokemon Showdown battles.
+model_agent.py — HTTP-based agents for Pokemon Showdown battles.
 
-This agent uses a local LLM (via Ollama) to make battle decisions.
-The LLM receives the current game state and must choose a valid action.
+Two concrete agents are provided:
+
+- OllamaModelAgent: sends an English-formatted game state to any Ollama-hosted
+  instruction-following LLM (e.g. llama3.2).
+
+- BERTModelAgent: sends the raw PS protocol directly to the locally trained
+  RoBERTa QA model (model_server.py on port 11435), matching the format the
+  model was trained on.
+
+LLMModelAgent is kept as a backward-compatible alias for OllamaModelAgent.
 """
 
 from __future__ import annotations
+import abc
 import os
 import re
 import logging
@@ -20,106 +29,66 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_QUESTION_CHARS = 1800
 
-class LLMModelAgent(Agent):
-    """Agent that uses a local LLM (Ollama) to make battle decisions.
 
-    The LLM receives:
-    - The battle format
-    - Player number
-    - Current game state (stringified)
-    - Previous actions taken
-    - List of available actions
+# ---------------------------------------------------------------------------
+# Base class — shared HTTP query logic, action parsing, and game loop
+# ---------------------------------------------------------------------------
 
-    The LLM must choose one of the available actions by name or index.
-    """
+class _BaseHTTPModelAgent(Agent):
+    """Base for agents that query an Ollama-compatible HTTP model server."""
 
-    DEFAULT_MODEL = "llama3.2:latest"
-    DEFAULT_OLLAMA_URL = "http://localhost:11434"
+    DEFAULT_MODEL: str = "local-model"
+    DEFAULT_OLLAMA_URL: str = "http://localhost:11435"
 
     def __init__(
         self,
         player_number: int,
         username: str,
         battle_format: str = "gen9ou",
-        model_name: str = DEFAULT_MODEL,
-        ollama_url: str = DEFAULT_OLLAMA_URL,
+        model_name: str | None = None,
+        ollama_url: str | None = None,
         teams_dir: str = "teams",
         log_path: str | None = None,
+        team_index: int | None = None,
     ) -> None:
         super().__init__(player_number, username)
         self.battle_format = battle_format
-        self.model_name = model_name
-        self.ollama_url = ollama_url
+        self.model_name = model_name or self.DEFAULT_MODEL
+        self.ollama_url = ollama_url or self.DEFAULT_OLLAMA_URL
         self.teams_dir = teams_dir
+        self._team_index = team_index
         self._team_cache: dict[str, str] = {}
         self._llm_logger = LLMLogger(log_path) if log_path else None
 
-        # Track action history for context
         self.action_history: List[str] = []
-
-        # Track turn-by-turn battle events
         self.turn_history: List[str] = []
         self._last_seen_turn = 0
 
-        # Import requests here to make it optional
         try:
             import requests
-
             self._requests = requests
         except ImportError:
             raise ImportError(
-                "requests library required for LLMModelAgent. "
-                "Install with: pip install requests"
+                "requests library required. Install with: pip install requests"
             )
 
-    def _stringify_game_state(self, gamestate: GameState) -> str:
-        """Convert game state to a human-readable string for the LLM."""
-        lines = []
-        lines.append(f"Turn: {gamestate.turn}")
-        lines.append(f"Active Player: Player {gamestate.active_player}")
-        lines.append("")
-
-        for side in gamestate.sides:
-            is_my_side = side.player_id == self.player_number
-            marker = " (YOU)" if is_my_side else " (OPPONENT)"
-            lines.append(f"=== {side.username}{marker} ===")
-
-            if not side.pokemon:
-                lines.append("  (No Pokemon info available)")
-            else:
-                for i, poke in enumerate(side.pokemon):
-                    active_tag = " [ACTIVE]" if poke.is_active else ""
-                    status_tag = f" ({poke.status})" if poke.status else ""
-                    hp_display = f"{poke.hp_pct * 100:.0f}%"
-                    if poke.hp_pct == 0:
-                        hp_display = "FAINTED"
-                    lines.append(
-                        f"  {i + 1}. {poke.species}: {hp_display}{status_tag}{active_tag}"
-                    )
-                    # Show moveset for LLM player's team only
-                    if is_my_side and poke.moves:
-                        moves_str = ", ".join(poke.moves)
-                        lines.append(f"     Moves: {moves_str}")
-            lines.append("")
-
-        return "\n".join(lines)
+    @abc.abstractmethod
+    def _build_prompt(self, gamestate: GameState) -> str:
+        """Build the prompt to send to the model server."""
 
     def _stringify_available_actions(self, actions: List[Action]) -> str:
-        """Convert available actions to a list."""
         lines = ["Available actions:"]
         for action in actions:
-            action_type = action.action_type.upper()
-            lines.append(f"  {action_type}: {action.label}")
+            lines.append(f"  {action.action_type.upper()}: {action.label}")
         return "\n".join(lines)
 
     def _extract_turn_events(self, gamestate: GameState) -> List[str]:
-        """Extract relevant battle events from the raw protocol."""
         events = []
         if not gamestate.raw_protocol:
             return events
 
-        # Parse the raw protocol for battle events
         for line in gamestate.raw_protocol.split("\n"):
             line = line.strip()
             if not line or not line.startswith("|"):
@@ -131,64 +100,47 @@ class LLMModelAgent(Agent):
 
             msg_type = parts[1]
 
-            # Capture interesting events
             if msg_type == "move":
-                # |move|POKEMON|MOVE|TARGET
                 if len(parts) >= 4:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
-                    move = parts[3]
-                    events.append(f"{pokemon} used {move}")
+                    events.append(f"{pokemon} used {parts[3]}")
 
             elif msg_type == "-damage":
-                # |-damage|POKEMON|HP STATUS
                 if len(parts) >= 4:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
-                    hp_info = parts[3]
-                    events.append(f"{pokemon} took damage ({hp_info})")
+                    events.append(f"{pokemon} took damage ({parts[3]})")
 
             elif msg_type == "-heal":
                 if len(parts) >= 4:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
-                    hp_info = parts[3]
-                    events.append(f"{pokemon} healed ({hp_info})")
+                    events.append(f"{pokemon} healed ({parts[3]})")
 
             elif msg_type == "faint":
                 if len(parts) >= 3:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
                     events.append(f"{pokemon} fainted!")
 
-            elif msg_type == "switch" or msg_type == "drag":
+            elif msg_type in ("switch", "drag"):
                 if len(parts) >= 4:
-                    pokemon = parts[3].split(",")[0]  # Get species name
-                    player = (
-                        "You" if f"p{self.player_number}" in parts[2] else "Opponent"
-                    )
+                    pokemon = parts[3].split(",")[0]
+                    player = "You" if f"p{self.player_number}" in parts[2] else "Opponent"
                     events.append(f"{player} sent out {pokemon}")
 
             elif msg_type == "-status":
                 if len(parts) >= 4:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
-                    status = parts[3]
                     status_names = {
-                        "brn": "burned",
-                        "par": "paralyzed",
-                        "slp": "fell asleep",
-                        "frz": "frozen",
-                        "psn": "poisoned",
-                        "tox": "badly poisoned",
+                        "brn": "burned", "par": "paralyzed", "slp": "fell asleep",
+                        "frz": "frozen", "psn": "poisoned", "tox": "badly poisoned",
                     }
-                    status_text = status_names.get(status, status)
-                    events.append(f"{pokemon} was {status_text}")
+                    events.append(f"{pokemon} was {status_names.get(parts[3], parts[3])}")
 
             elif msg_type == "-supereffective":
                 events.append("It's super effective!")
-
             elif msg_type == "-resisted":
                 events.append("It's not very effective...")
-
             elif msg_type == "-crit":
                 events.append("Critical hit!")
-
             elif msg_type == "-miss":
                 if len(parts) >= 3:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
@@ -196,93 +148,34 @@ class LLMModelAgent(Agent):
 
         return events
 
-    def _build_prompt(self, gamestate: GameState) -> str:
-        """Build the prompt for the LLM."""
-        state_str = self._stringify_game_state(gamestate)
-        actions_str = self._stringify_available_actions(gamestate.available_actions)
-
-        # Build turn history context
-        turn_history_context = ""
-        if self.turn_history:
-            recent_turns = self.turn_history[-20:]  # Last 20 events
-            turn_history_context = "\nRecent battle events:\n"
-            turn_history_context += "\n".join(f"  - {event}" for event in recent_turns)
-            turn_history_context += "\n"
-
-        # Build action history context
-        history_context = ""
-        if self.action_history:
-            recent_history = self.action_history[-10:]  # Last 10 actions
-            history_context = "\nYour previous actions this battle:\n"
-            history_context += "\n".join(f"  - {action}" for action in recent_history)
-            history_context += "\n"
-
-        prompt = f"""You are battling in {self.battle_format} as Player {self.player_number}. Given the current battle state, please:
-choose one of the legal moves on the active Pokemon, if applicable, or
-switch to one of the non-fainted Pokemon on the team, if allowed.
-
-Current Battle State:
-{state_str}
-{turn_history_context}
-{history_context}
-{actions_str}
-
-IMPORTANT: You must respond with ONLY the the exact action name from the list above.
-Think about type matchups, HP levels, and status conditions when making your decision.
-Do NOT include any explanation - just the action name.
-
-Your choice:"""
-
-        return prompt
-
-    def _query_llm(self, prompt: str) -> str:
-        """Send a prompt to the Ollama API and get a response."""
+    def _query_server(self, prompt: str) -> str:
         url = f"{self.ollama_url}/api/generate"
-
         payload = {
             "model": self.model_name,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "temperature": 0.5,  # Lower temperature for more consistent choices
-                "num_predict": 50,  # We only need a short response
-            },
+            "options": {"temperature": 0.5, "num_predict": 50},
         }
-
         try:
             response = self._requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
-            result = response.json()
-            return result.get("response", "").strip()
+            return response.json().get("response", "").strip()
         except self._requests.exceptions.ConnectionError:
-            logger.error(
-                "Failed to connect to Ollama at %s. Is Ollama running?", self.ollama_url
-            )
-            raise RuntimeError(f"Cannot connect to Ollama at {self.ollama_url}")
+            logger.error("Failed to connect to model server at %s.", self.ollama_url)
+            raise RuntimeError(f"Cannot connect to model server at {self.ollama_url}")
         except self._requests.exceptions.Timeout:
-            logger.error("Ollama request timed out")
-            raise RuntimeError("Ollama request timed out")
+            raise RuntimeError("Model server request timed out")
         except Exception as e:
-            logger.error("Error querying Ollama: %s", e)
+            logger.error("Error querying model server: %s", e)
             raise
 
     def _parse_llm_response(
         self, response: str, available_actions: List[Action]
     ) -> Optional[Action]:
-        """Parse LLM response and find the matching action.
-
-        Tries multiple strategies:
-        1. Direct index match (e.g., "0", "1", "2")
-        2. Exact action label match (case-insensitive)
-        3. Partial action label match (fuzzy)
-        4. Action type + name match (e.g., "use Thunderbolt", "switch to Pikachu")
-
-        Returns None if no valid action could be determined.
-        """
         response = response.strip()
-        logger.debug("LLM raw response: %s", response)
+        logger.debug("Model raw response: %s", response)
 
-        # Strategy 1: Try to extract a number
+        # Strategy 1: numeric index
         numbers = re.findall(r"\b(\d+)\b", response)
         if numbers:
             try:
@@ -293,106 +186,80 @@ Your choice:"""
             except (ValueError, IndexError):
                 pass
 
-        # Strategy 2: Exact label match (case-insensitive)
         response_lower = response.lower()
+
+        # Strategy 2: exact label
         for action in available_actions:
             if action.label.lower() == response_lower:
                 logger.info("Matched action by exact label: %s", action.label)
                 return action
 
-        # Strategy 3: Partial match - check if action label appears in response
+        # Strategy 3: partial label
         for action in available_actions:
             if action.label.lower() in response_lower:
                 logger.info("Matched action by partial label: %s", action.label)
                 return action
 
-        # Strategy 4: Check for action type keywords
-        move_keywords = ["use", "attack", "move"]
-        switch_keywords = ["switch", "swap", "go"]
-
-        # Check for move actions
-        for keyword in move_keywords:
+        # Strategy 4: type keywords
+        for keyword in ("use", "attack", "move"):
             if keyword in response_lower:
-                # Look for move actions
                 for action in available_actions:
-                    if (
-                        action.action_type == "move"
-                        and action.label.lower() in response_lower
-                    ):
+                    if action.action_type == "move" and action.label.lower() in response_lower:
                         logger.info("Matched move action: %s", action.label)
                         return action
 
-        # Check for switch actions
-        for keyword in switch_keywords:
+        for keyword in ("switch", "swap", "go"):
             if keyword in response_lower:
-                # Look for switch actions
                 for action in available_actions:
-                    if (
-                        action.action_type == "switch"
-                        and action.label.lower() in response_lower
-                    ):
+                    if action.action_type == "switch" and action.label.lower() in response_lower:
                         logger.info("Matched switch action: %s", action.label)
                         return action
 
-        # Strategy 5: Fuzzy match using simple word overlap
+        # Strategy 5: word overlap
         best_match = None
         best_score = 0
         response_words = set(response_lower.split())
-
         for action in available_actions:
-            label_words = set(action.label.lower().split())
-            overlap = len(response_words & label_words)
+            overlap = len(response_words & set(action.label.lower().split()))
             if overlap > best_score:
                 best_score = overlap
                 best_match = action
 
         if best_match and best_score > 0:
-            logger.info(
-                "Matched action by word overlap: %s (score=%d)",
-                best_match.label,
-                best_score,
-            )
+            logger.info("Matched action by word overlap: %s (score=%d)", best_match.label, best_score)
             return best_match
 
         return None
 
     def decide(self, gamestate: GameState) -> Action:
-        """Ask the LLM to choose an action given the current game state."""
         available_actions = self.get_available_actions(gamestate)
-
         if not available_actions:
             raise ValueError("No available actions to choose from!")
 
-        # Extract and record turn events from raw protocol
         events = self._extract_turn_events(gamestate)
         if events:
-            # Add turn marker if this is a new turn
             if gamestate.turn > self._last_seen_turn:
                 self.turn_history.append(f"--- Turn {gamestate.turn} ---")
                 self._last_seen_turn = gamestate.turn
             self.turn_history.extend(events)
 
-        # Log available actions for visibility
         logger.info("Turn %d - Available actions:", gamestate.turn)
         for i, action in enumerate(available_actions):
             logger.info("  [%d] %s", i, action.label)
 
-        # Build and send prompt
         prompt = self._build_prompt(gamestate)
         logger.debug("Prompt:\n%s", prompt)
 
         try:
-            response = self._query_llm(prompt)
-            logger.info("LLM response: %s", response)
+            response = self._query_server(prompt)
+            logger.info("Model response: %s", response)
 
-            # Parse the response
             action = self._parse_llm_response(response, available_actions)
             parse_success = action is not None
 
             if action is None:
-                # Fallback: use first available action
                 logger.warning(
-                    "Could not parse LLM response '%s', using first available action",
+                    "Could not parse model response '%s', using first available action",
                     response,
                 )
                 action = available_actions[0]
@@ -414,78 +281,142 @@ Your choice:"""
                     parse_success=parse_success,
                 )
 
-            # Record action for history
-            action_desc = (
+            self.action_history.append(
                 f"Turn {gamestate.turn}: {action.action_type} - {action.label}"
             )
-            self.action_history.append(action_desc)
-
             return action
 
         except Exception as e:
-            logger.error("Error during LLM query: %s", e)
-            # Fallback to random action on error
+            logger.error("Error during model query: %s", e)
             import random
-
             action = random.choice(available_actions)
             logger.warning("Falling back to random action: %s", action.label)
             return action
 
     def get_team(self, format_id: str) -> Optional[str]:
-        """Get or generate a team for the specified format."""
-        # Random battle formats don't need teams
         if "random" in format_id.lower():
             return None
-
-        # Check cache
         if format_id in self._team_cache:
             return self._team_cache[format_id]
 
-        # Import here to avoid circular imports
         from teams import TeamManager
-
         manager = TeamManager(teams_dir=self.teams_dir)
-        packed_team = manager.get_sample_team(format_id)
-
-        # Save for future use
+        packed_team = manager.get_sample_team(format_id, team_index=self._team_index)
         self._save_team(format_id, packed_team, manager)
-
-        # Cache and return
         self._team_cache[format_id] = packed_team
-        logger.info("LLMModelAgent[%s]: loaded team for %s", self.username, format_id)
-
+        logger.info("%s[%s]: loaded team for %s", type(self).__name__, self.username, format_id)
         return packed_team
 
-    def _save_team(
-        self, format_id: str, packed_team: str, manager: "TeamManager"
-    ) -> None:
-        """Save the team to a file for future reference."""
+    def _save_team(self, format_id: str, packed_team: str, manager: "TeamManager") -> None:
         os.makedirs(self.teams_dir, exist_ok=True)
-
-        # Create format-specific directory
         format_dir = os.path.join(self.teams_dir, format_id)
         os.makedirs(format_dir, exist_ok=True)
-
-        # Generate a unique filename
         import time
-
-        timestamp = int(time.time())
-        filename = f"team_{self.username}_{timestamp}.txt"
-        filepath = os.path.join(format_dir, filename)
-
-        # Save as human-readable export format
+        filepath = os.path.join(format_dir, f"team_{self.username}_{int(time.time())}.txt")
         try:
             manager.save_team_to_file(packed_team, filepath, as_export=True)
-            logger.info("LLMModelAgent[%s]: saved team to %s", self.username, filepath)
+            logger.info("%s[%s]: saved team to %s", type(self).__name__, self.username, filepath)
         except Exception as e:
-            logger.warning(
-                "LLMModelAgent[%s]: failed to save team: %s", self.username, e
-            )
+            logger.warning("%s[%s]: failed to save team: %s", type(self).__name__, self.username, e)
 
 
 # ---------------------------------------------------------------------------
-# Test function: Run LLM agent vs Random agent
+# OllamaModelAgent — English-formatted prompt for instruction-following LLMs
 # ---------------------------------------------------------------------------
+
+class OllamaModelAgent(_BaseHTTPModelAgent):
+    """Agent that uses an Ollama-hosted LLM to make battle decisions.
+
+    Sends a human-readable English game state description.
+    """
+
+    DEFAULT_MODEL = "llama3.2:latest"
+    DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+    def _stringify_game_state(self, gamestate: GameState) -> str:
+        lines = [f"Turn: {gamestate.turn}", f"Active Player: Player {gamestate.active_player}", ""]
+        for side in gamestate.sides:
+            is_my_side = side.player_id == self.player_number
+            marker = " (YOU)" if is_my_side else " (OPPONENT)"
+            lines.append(f"=== {side.username}{marker} ===")
+            if not side.pokemon:
+                lines.append("  (No Pokemon info available)")
+            else:
+                for i, poke in enumerate(side.pokemon):
+                    active_tag = " [ACTIVE]" if poke.is_active else ""
+                    status_tag = f" ({poke.status})" if poke.status else ""
+                    hp_display = "FAINTED" if poke.hp_pct == 0 else f"{poke.hp_pct * 100:.0f}%"
+                    lines.append(f"  {i + 1}. {poke.species}: {hp_display}{status_tag}{active_tag}")
+                    if is_my_side and poke.moves:
+                        lines.append(f"     Moves: {', '.join(poke.moves)}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _build_prompt(self, gamestate: GameState) -> str:
+        state_str = self._stringify_game_state(gamestate)
+        actions_str = self._stringify_available_actions(gamestate.available_actions)
+
+        turn_history_context = ""
+        if self.turn_history:
+            recent_turns = self.turn_history[-20:]
+            turn_history_context = "\nRecent battle events:\n"
+            turn_history_context += "\n".join(f"  - {e}" for e in recent_turns)
+            turn_history_context += "\n"
+
+        history_context = ""
+        if self.action_history:
+            recent_history = self.action_history[-10:]
+            history_context = "\nYour previous actions this battle:\n"
+            history_context += "\n".join(f"  - {a}" for a in recent_history)
+            history_context += "\n"
+
+        return (
+            f"You are battling in {self.battle_format} as Player {self.player_number}. "
+            f"Given the current battle state, please:\n"
+            f"choose one of the legal moves on the active Pokemon, if applicable, or\n"
+            f"switch to one of the non-fainted Pokemon on the team, if allowed.\n\n"
+            f"Current Battle State:\n{state_str}\n"
+            f"{turn_history_context}"
+            f"{history_context}"
+            f"{actions_str}\n\n"
+            f"IMPORTANT: You must respond with ONLY the the exact action name from the list above.\n"
+            f"Think about type matchups, HP levels, and status conditions when making your decision.\n"
+            f"Do NOT include any explanation - just the action name.\n\n"
+            f"Your choice:"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BERTModelAgent — raw PS protocol for the locally trained RoBERTa QA model
+# ---------------------------------------------------------------------------
+
+class BERTModelAgent(_BaseHTTPModelAgent):
+    """Agent that uses the locally trained RoBERTa QA model on port 11435.
+
+    Sends the raw PS protocol as the question and the available actions block
+    as context, matching the SQuAD format the model was trained on.
+    """
+
+    DEFAULT_MODEL = "local-model"
+    DEFAULT_OLLAMA_URL = "http://localhost:11435"
+
+    def _build_prompt(self, gamestate: GameState) -> str:
+        protocol = (gamestate.raw_protocol or "")[-MAX_QUESTION_CHARS:]
+        actions_str = self._stringify_available_actions(gamestate.available_actions)
+        return f"{protocol}\n\n{actions_str}"
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility alias
+# ---------------------------------------------------------------------------
+
+LLMModelAgent = OllamaModelAgent
+
+
+# ---------------------------------------------------------------------------
+# Test functions
+# ---------------------------------------------------------------------------
+
 def test_llm_vs_random():
     """Test the LLM agent against a RandomAgent using the GameRunner."""
     import logging
@@ -499,8 +430,7 @@ def test_llm_vs_random():
     from agents import RandomAgent
     from ps_server import PSServer
 
-    # Configuration
-    FORMAT = "gen9randombattle"  # Use random battle to avoid team issues
+    FORMAT = "gen9randombattle"
     USERNAME1 = "LLMBot"
     USERNAME2 = "RandomBot"
 
@@ -509,31 +439,23 @@ def test_llm_vs_random():
     print(f"Format: {FORMAT}")
     print("=" * 60)
 
-    # Check if Ollama is available
     print("\nChecking Ollama connection...")
     try:
         import requests
-
-        response = requests.get(
-            f"{LLMModelAgent.DEFAULT_OLLAMA_URL}/api/tags", timeout=5
-        )
+        response = requests.get(f"{OllamaModelAgent.DEFAULT_OLLAMA_URL}/api/tags", timeout=5)
         if response.status_code == 200:
             models = response.json().get("models", [])
             model_names = [m.get("name", m.get("model", "unknown")) for m in models]
             print(f"Ollama is running. Available models: {model_names}")
             if not model_names:
-                print(
-                    "WARNING: No models installed. Install one with: ollama pull llama3.2"
-                )
+                print("WARNING: No models installed. Install one with: ollama pull llama3.2")
         else:
             print(f"Warning: Ollama returned status {response.status_code}")
     except Exception:
-        print(f"ERROR: Cannot connect to Ollama at {LLMModelAgent.DEFAULT_OLLAMA_URL}")
+        print(f"ERROR: Cannot connect to Ollama at {OllamaModelAgent.DEFAULT_OLLAMA_URL}")
         print("Please ensure Ollama is running with: ollama serve")
-        print("And that you have a model installed: ollama pull llama3.2")
         return
 
-    # Create the PS server connection
     print("\nStarting Pokemon Showdown server connection...")
     ps_server = PSServer(
         server_url="http://localhost:8000",
@@ -548,18 +470,12 @@ def test_llm_vs_random():
         print(f"ERROR: Failed to connect PS server: {e}")
         return
 
-    # Define agent factories
-    def llm_agent_factory(player_num: int, username: str) -> Agent:
-        return LLMModelAgent(
-            player_number=player_num,
-            username=username,
-            battle_format=FORMAT,
-        )
+    def llm_agent_factory(player_num, username):
+        return OllamaModelAgent(player_number=player_num, username=username, battle_format=FORMAT)
 
-    def random_agent_factory(player_num: int, username: str) -> Agent:
+    def random_agent_factory(player_num, username):
         return RandomAgent(player_num, username)
 
-    # Create game runner (without data collector to avoid set_battle_log error)
     runner = GameRunner(
         ps_server=ps_server,
         agent1_factory=llm_agent_factory,
@@ -570,18 +486,15 @@ def test_llm_vs_random():
         format=FORMAT,
     )
 
-    # Run the game
     print("\nStarting battle...")
     try:
         winner = runner.run()
-
         if winner == 1:
-            print(f"\n🏆 {USERNAME1} (LLM) wins!")
+            print(f"\n{USERNAME1} (LLM) wins!")
         elif winner == 2:
-            print(f"\n🏆 {USERNAME2} (Random) wins!")
+            print(f"\n{USERNAME2} (Random) wins!")
         else:
-            print("\n❓ Battle ended without a clear winner")
-
+            print("\nBattle ended without a clear winner")
     except KeyboardInterrupt:
         print("\n\nBattle interrupted by user")
     except Exception as e:
@@ -604,39 +517,22 @@ def test_llm_query():
     print("Testing LLM Query")
     print("=" * 60)
 
-    # Create a mock game state
     my_pokemon = [
         PokemonSlot(species="Charizard", hp_pct=0.75, status=None, is_active=True),
         PokemonSlot(species="Blastoise", hp_pct=1.0, status=None, is_active=False),
         PokemonSlot(species="Venusaur", hp_pct=0.5, status="psn", is_active=False),
     ]
-
     opponent_pokemon = [
         PokemonSlot(species="Pikachu", hp_pct=0.3, status=None, is_active=True),
         PokemonSlot(species="Raichu", hp_pct=1.0, status=None, is_active=False),
     ]
-
     available_actions = [
-        Action(
-            action_id="move 1", action_type="move", target_index=1, label="Flamethrower"
-        ),
-        Action(
-            action_id="move 2", action_type="move", target_index=2, label="Dragon Claw"
-        ),
-        Action(
-            action_id="move 3", action_type="move", target_index=3, label="Earthquake"
-        ),
-        Action(
-            action_id="switch 2",
-            action_type="switch",
-            target_index=2,
-            label="Blastoise",
-        ),
-        Action(
-            action_id="switch 3", action_type="switch", target_index=3, label="Venusaur"
-        ),
+        Action(action_id="move 1", action_type="move", target_index=1, label="Flamethrower"),
+        Action(action_id="move 2", action_type="move", target_index=2, label="Dragon Claw"),
+        Action(action_id="move 3", action_type="move", target_index=3, label="Earthquake"),
+        Action(action_id="switch 2", action_type="switch", target_index=2, label="Blastoise"),
+        Action(action_id="switch 3", action_type="switch", target_index=3, label="Venusaur"),
     ]
-
     gamestate = GameState(
         turn=5,
         active_player=1,
@@ -647,28 +543,22 @@ def test_llm_query():
         available_actions=available_actions,
     )
 
-    # Create agent
-    agent = LLMModelAgent(
-        player_number=1,
-        username="LLMBot",
-        battle_format="gen9ou",
-    )
+    agent = OllamaModelAgent(player_number=1, username="LLMBot", battle_format="gen9ou")
 
     print("\nGame State:")
     print(agent._stringify_game_state(gamestate))
     print("\nActions:")
     print(agent._stringify_available_actions(available_actions))
-
     print("\n" + "=" * 60)
     print("Querying LLM...")
     print("=" * 60)
 
     try:
         action = agent.decide(gamestate)
-        print(f"\n✅ LLM chose: {action.action_type.upper()} - {action.label}")
+        print(f"\nLLM chose: {action.action_type.upper()} - {action.label}")
         print(f"   (action_id: {action.action_id})")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
 
 
 if __name__ == "__main__":

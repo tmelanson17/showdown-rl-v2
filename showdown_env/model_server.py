@@ -19,10 +19,11 @@ Replace ``model_policy`` with your trained model's forward pass.
 
 import json
 import logging
+import os
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import List
+from typing import List, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,31 +33,125 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 11435
 MODEL_NAME = "local-model"
+MODEL_DIR = os.path.expanduser("~/pokemans/final_model")
+MAX_QUESTION_CHARS = 1800
 
 
 # ---------------------------------------------------------------------------
-# Policy — replace with your trained model
+# Model loading and inference
 # ---------------------------------------------------------------------------
+
+def _load_model(model_dir: str):
+    from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+    import torch
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForQuestionAnswering.from_pretrained(model_dir)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+    logger.info("Model loaded from %s on %s", model_dir, device)
+    return tokenizer, model, device
+
+
+def _predict(tokenizer, model, device, question: str, context: str) -> str:
+    """Score each complete context line as start_logit[first_tok] + end_logit[last_tok].
+
+    This constrains extraction to line-aligned spans, preventing partial matches
+    like bare "move" or "switch" instead of "move Dragon Dance" or "switch Skarmory".
+    """
+    import torch
+    context_lines = [l.strip() for l in context.strip().split('\n') if l.strip()]
+    if not context_lines:
+        return ""
+
+    encoding = tokenizer(
+        question,
+        context,
+        max_length=512,
+        truncation="only_first",
+        return_tensors="pt",
+        padding=True,
+        return_offsets_mapping=True,
+    )
+
+    offset_mapping = encoding.pop("offset_mapping")[0].tolist()
+    sequence_ids = encoding.sequence_ids(0)
+    model_inputs = {k: v.to(device) for k, v in encoding.items()}
+
+    with torch.no_grad():
+        outputs = model(**model_inputs)
+
+    start_logits = outputs.start_logits[0]
+    end_logits = outputs.end_logits[0]
+
+    best_score = float('-inf')
+    best_line = context_lines[0]
+
+    char_pos = 0
+    for line in context_lines:
+        line_start = context.index(line, char_pos)
+        line_end = line_start + len(line)
+        char_pos = line_end
+
+        tok_start = None
+        tok_end = None
+        for i, (c_start, c_end) in enumerate(offset_mapping):
+            if sequence_ids[i] != 1:
+                continue
+            if tok_start is None and c_start >= line_start and c_start < line_end:
+                tok_start = i
+            if c_start >= line_start and c_end <= line_end:
+                tok_end = i
+
+        if tok_start is None or tok_end is None or tok_end < tok_start:
+            continue
+
+        score = start_logits[tok_start].item() + end_logits[tok_end].item()
+        if score > best_score:
+            best_score = score
+            best_line = line
+
+    return best_line
+
+
+try:
+    _tokenizer, _model, _device = _load_model(MODEL_DIR)
+except Exception as exc:
+    logger.warning("Could not load model from %s: %s — falling back to first action", MODEL_DIR, exc)
+    _tokenizer = _model = _device = None
+
+
+# ---------------------------------------------------------------------------
+# Policy
+# ---------------------------------------------------------------------------
+
+def _parse_typed_actions(prompt: str) -> List[Tuple[str, str]]:
+    """Return [(action_type, label), ...] from the Available actions block."""
+    typed: List[Tuple[str, str]] = []
+    in_actions = False
+    for line in prompt.splitlines():
+        if line.strip() == "Available actions:":
+            in_actions = True
+            continue
+        if in_actions:
+            m = re.match(r"\s+(MOVE|SWITCH):\s+(.+)", line)
+            if m:
+                typed.append((m.group(1).lower(), m.group(2).strip()))
+            elif line.strip() and not line.startswith(" "):
+                break
+    return typed
+
 
 def model_policy(prompt: str, available_actions: List[str]) -> str:
-    """Choose an action given the prompt and list of available action labels.
-
-    Replace the body of this function with your model's forward pass.
-    ``available_actions`` is already parsed for you so you don't have to
-    re-parse the prompt text.
-
-    Args:
-        prompt: The full prompt string sent by LLMModelAgent.
-        available_actions: Action labels extracted from the prompt, e.g.
-            ["Flamethrower", "Dragon Claw", "Earthquake", "Blastoise"]
-
-    Returns:
-        The chosen action label (must be one of ``available_actions``).
-    """
-    # TODO: replace with model.predict(prompt) or model.predict(available_actions)
     if not available_actions:
         return ""
-    return available_actions[0]
+    if _model is None:
+        return available_actions[0]
+    typed = _parse_typed_actions(prompt)
+    context = "\n".join(f"{t} {l}" for t, l in typed) if typed else "\n".join(available_actions)
+    parts = prompt.split("\nAvailable actions:", 1)
+    question = parts[0][-MAX_QUESTION_CHARS:]
+    return _predict(_tokenizer, _model, _device, question, context)
 
 
 # ---------------------------------------------------------------------------

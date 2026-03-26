@@ -373,7 +373,7 @@ class HumanGameRunner:
             )
             if attempt == 0:
                 print(
-                    f"\n🎮 Challenging {self.human_username} to a {self.format} battle..."
+                    f"\nChallenging {self.human_username} to a {self.format} battle..."
                 )
                 print(f"   Waiting for them to accept...\n")
 
@@ -385,7 +385,7 @@ class HumanGameRunner:
                 break
 
             # Team was rejected
-            print(f"❌ Team rejected: {rejection}")
+            print(f"Team rejected: {rejection}")
             logger.warning("HumanGameRunner: team rejected: %s", rejection)
 
             if attempt < max_retries - 1:
@@ -397,7 +397,7 @@ class HumanGameRunner:
                 team = self.agent.get_team(self.format)
             else:
                 print(
-                    f"❌ Failed after {max_retries} attempts. Team validation failed."
+                    f"Failed after {max_retries} attempts. Team validation failed."
                 )
                 if self.data_collector:
                     self.data_collector.record_if_challenge_failed(
@@ -412,14 +412,14 @@ class HumanGameRunner:
             logger.warning(
                 "HumanGameRunner: battle didn't start (challenge not accepted?)"
             )
-            print("❌ Challenge was not accepted or timed out.")
+            print("Challenge was not accepted or timed out.")
             if self.data_collector:
                 self.data_collector.record_if_challenge_failed("Challenge not accepted")
                 self.data_collector.end_record()
             return None
 
         logger.info("HumanGameRunner: battle started in room %s", battle_room)
-        print(f"✅ Battle started! Room: {battle_room}\n")
+        print(f"Battle started! Room: {battle_room}\n")
 
         # Battle loop
         start_time = time.time()
@@ -488,11 +488,11 @@ class HumanGameRunner:
 
         if winner:
             if winner.lower() == self.agent_username.lower():
-                print(f"\n🏆 Victory! {self.agent_username} wins!")
+                print(f"\nVictory! {self.agent_username} wins!")
             elif winner.lower() == self.human_username.lower():
-                print(f"\n😔 Defeat. {self.human_username} wins.")
+                print(f"\nDefeat. {self.human_username} wins.")
             else:
-                print(f"\n🤝 Battle ended. Winner: {winner}")
+                print(f"\nBattle ended. Winner: {winner}")
 
         # End recording
         if self.data_collector:
@@ -606,11 +606,15 @@ class HumanGameRunner:
             pokemon=[],
         )
 
+        raw_log = self.client.get_battle_log()
+        raw_protocol = "\n".join(raw_log[-50:]) if raw_log else None
+
         return GameState(
             turn=turn,
             active_player=1,
             sides=[my_side, opponent_side],
             available_actions=available_actions,
+            raw_protocol=raw_protocol,
         )
 
     def _action_to_choice(self, action: Action) -> str:
