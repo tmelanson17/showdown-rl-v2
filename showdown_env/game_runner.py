@@ -283,11 +283,12 @@ class HumanGameRunner:
     """
 
     DEFAULT_HUMAN_USERNAME = "ctjn20"
+    DEFAULT_AGENT_USERNAME = "MechaMewtwo1997"
 
     def __init__(
         self,
         agent_factory: AgentFactory,
-        agent_username: str = "GuestBot",
+        agent_username: str = DEFAULT_AGENT_USERNAME,
         human_username: str = DEFAULT_HUMAN_USERNAME,
         format: str = "gen9randombattle",
         data_collector: Optional[DataCollector] = None,
@@ -362,6 +363,14 @@ class HumanGameRunner:
         # Get team from agent if needed
         team = self.agent.get_team(self.format)
 
+        # Verify target is online before attempting challenge
+        if not self.client.is_user_online(self.human_username):
+            print(f"{self.human_username} does not appear to be online on Pokemon Showdown.")
+            if self.data_collector:
+                self.data_collector.record_if_challenge_failed("Target user offline")
+                self.data_collector.end_record()
+            return None
+
         # Challenge the human, retry with different teams if rejected
         max_retries = 3
         for attempt in range(max_retries):
@@ -396,9 +405,7 @@ class HumanGameRunner:
                     self.agent._team_cache.pop(self.format, None)
                 team = self.agent.get_team(self.format)
             else:
-                print(
-                    f"Failed after {max_retries} attempts. Team validation failed."
-                )
+                print(f"Failed after {max_retries} attempts. Team validation failed.")
                 if self.data_collector:
                     self.data_collector.record_if_challenge_failed(
                         f"Team rejected: {rejection}"
@@ -621,3 +628,4 @@ class HumanGameRunner:
         """Convert an Action to a PS choice string."""
         # The action_id is already in the correct format (e.g., "move 1", "switch 3")
         return action.action_id
+

@@ -81,6 +81,12 @@ def main():
         default=None,
         help="0-based index of built-in team to use (skips saved team files)",
     )
+    parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Password for the bot (default: None)",
+    )
 
     args = parser.parse_args()
 
@@ -129,12 +135,15 @@ def main():
         human_username=args.human,
         format=args.format,
         server_url=args.server,
+        password=args.password,
     )
 
     print("\nConnecting...")
     if runner.connect():
         print(f"SUCCESS! Logged in as {bot_name}")
-        print(f"\n>>> Go to http://localhost:8000")
+        print(
+            f"\n>>> Go to {args.server.replace('wss://', 'https://').replace('/websocket', '')} and log in as {args.human} to accept the challenge.\n"
+        )
         print(f">>> Log in as {args.human}")
         print(f">>> Accept the challenge from {bot_name}!")
         print(f"\nWaiting for battle ({args.timeout // 60} min timeout)...\n")

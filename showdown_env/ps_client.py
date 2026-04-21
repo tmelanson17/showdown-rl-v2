@@ -98,6 +98,9 @@ class PSClient:
             None  # Last popup message (for rejection detection)
         )
 
+        # Query responses (keyed by query type, e.g. "userdetails")
+        self._query_responses: Dict[str, Any] = {}
+
         # Callbacks
         self._on_challenge: Optional[Callable[[str, str], None]] = None
         self._on_battle_start: Optional[Callable[[str], None]] = None
@@ -231,6 +234,13 @@ class PSClient:
                             "PSClient: received challenge(s) from: %s",
                             list(self._pending_challenges.keys()),
                         )
+                    challenge_to = challenges.get("challengeTo")
+                    if challenge_to:
+                        logger.info(
+                            "PSClient: outgoing challenge registered — to=%s format=%s",
+                            challenge_to.get("to"),
+                            challenge_to.get("format"),
+                        )
                     if challenges.get("challengesFrom") and self._on_challenge:
                         for user, fmt in challenges["challengesFrom"].items():
                             self._on_challenge(user, fmt)
@@ -244,16 +254,41 @@ class PSClient:
                 self._last_popup = popup_text
                 logger.warning("PSClient: popup: %s", popup_text)
 
+        elif msg_type == "queryresponse":
+            # |queryresponse|userdetails|{json} or null
+            if len(parts) >= 4:
+                query_type = parts[2]
+                payload = "|".join(parts[3:])
+                try:
+                    self._query_responses[query_type] = json.loads(payload)
+                except json.JSONDecodeError:
+                    self._query_responses[query_type] = payload
+                logger.debug("PSClient: queryresponse[%s]: %s", query_type, payload[:200])
+
         elif msg_type == "pm":
             # |pm|~|~|/challenge opponent,format
             if len(parts) >= 5:
                 sender = parts[2]
                 message = parts[4]
-                logger.debug("PSClient: PM from %s: %s", sender, message)
+                logger.info("PSClient: PM from %s: %s", sender, message)
 
         # Battle messages
         elif room.startswith("battle-"):
             self._parse_battle_message(room, msg_type, parts)
+
+        # Check for other message types as needed (e.g., lobby chat, etc.)
+        elif msg_type == "init":
+            logger.info(
+                "PSClient: joined room '%s' (type: %s)",
+                room,
+                parts[2] if len(parts) > 2 else "?",
+            )
+
+        elif msg_type == "users":
+            logger.info(
+                "PSClient: lobby has %s users",
+                parts[2].split(",")[0] if len(parts) > 2 else "?",
+            )
 
     def _parse_battle_message(self, room: str, msg_type: str, parts: List[str]) -> None:
         """Parse battle-specific messages."""
@@ -386,6 +421,33 @@ class PSClient:
             success,
         )
         return success
+
+    def is_user_online(self, username: str, timeout: float = 5.0) -> bool:
+        """Check whether a user is currently online on Pokemon Showdown.
+
+        Sends a /query userdetails request and waits for the server response.
+        Returns True if the user is online, False if offline or unknown.
+        """
+        userid = username.lower().replace(" ", "")
+        # Clear any stale response for this query type
+        self._query_responses.pop("userdetails", None)
+
+        self._send(f"|/query userdetails {userid}")
+
+        start = time.time()
+        while time.time() - start < timeout:
+            if "userdetails" in self._query_responses:
+                data = self._query_responses["userdetails"]
+                if data is None:
+                    logger.info("PSClient: %s is offline (not found)", username)
+                    return False
+                online_name = data.get("name", "") or data.get("id", "")
+                logger.info("PSClient: %s is online (name=%s)", username, online_name)
+                return True
+            time.sleep(0.1)
+
+        logger.warning("PSClient: userdetails query for %s timed out", username)
+        return False
 
     def join_room(self, room: str) -> None:
         """Join a chat room."""
