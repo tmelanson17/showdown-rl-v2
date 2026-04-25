@@ -10,14 +10,19 @@ Matches the class diagram:
 """
 
 from __future__ import annotations
-import os
+import json
 import random
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ps_types import GameState, Action
 from ipc import IPCClient
+
+_MOVE_CATEGORIES: dict[str, str] = json.loads(
+    (Path(__file__).parent / "move_categories.json").read_text()
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +57,6 @@ class Agent(ABC):
         into the GameState.  Override if you need custom filtering.
         """
         return gamestate.available_actions
-
-    def get_team(self, format_id: str) -> Optional[str]:
-        """Return a team in packed format for the specified format.
-
-        Returns None if the agent doesn't handle team selection
-        (e.g., for random battle formats or to use PS default).
-        """
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -168,74 +165,25 @@ class RandomAgent(Agent):
         player_number: int,
         username: str,
         seed: Optional[int] = None,
-        teams_dir: str = "teams",
     ) -> None:
         super().__init__(player_number, username)
         self.rng = random.Random(seed)
-        self.teams_dir = teams_dir
-        self._team_cache: dict[str, str] = {}  # format -> packed team
+
+    @staticmethod
+    def _move_weight(action: Action) -> int:
+        """Return 2 for attacking moves (Physical/Special), 1 for status/switch."""
+        if action.action_type != "move":
+            return 1
+        move_id = "".join(c for c in action.label.lower() if c.isalnum())
+        return 1 if _MOVE_CATEGORIES.get(move_id) == "Status" else 2
 
     def generate_action(self, gamestate: GameState) -> Action:
         actions = self.get_available_actions(gamestate)
-        return self.rng.choice(actions)
+        weights = [self._move_weight(a) for a in actions]
+        return self.rng.choices(actions, weights=weights, k=1)[0]
 
     def decide(self, gamestate: GameState) -> Action:
         return self.generate_action(gamestate)
-
-    def get_team(self, format_id: str) -> Optional[str]:
-        """Get or generate a team for the specified format.
-
-        For random battle formats, returns None (PS generates team).
-        For other formats, uses TeamManager to get a sample team.
-        """
-        # Random battle formats don't need teams
-        if "random" in format_id.lower():
-            return None
-
-        # Check cache
-        if format_id in self._team_cache:
-            return self._team_cache[format_id]
-
-        # Import here to avoid circular imports
-        from teams import TeamManager
-
-        manager = TeamManager(teams_dir=self.teams_dir)
-
-        # Try to load from saved teams first, then use sample
-        packed_team = manager.get_sample_team(format_id)
-
-        # Save for future use
-        self._save_team(format_id, packed_team, manager)
-
-        # Cache and return
-        self._team_cache[format_id] = packed_team
-        logger.info("RandomAgent[%s]: loaded team for %s", self.username, format_id)
-
-        return packed_team
-
-    def _save_team(
-        self, format_id: str, packed_team: str, manager: "TeamManager"
-    ) -> None:
-        """Save the team to a file for future reference."""
-        os.makedirs(self.teams_dir, exist_ok=True)
-
-        # Create format-specific directory
-        format_dir = os.path.join(self.teams_dir, format_id)
-        os.makedirs(format_dir, exist_ok=True)
-
-        # Generate a unique filename
-        import time
-
-        timestamp = int(time.time())
-        filename = f"team_{self.username}_{timestamp}.txt"
-        filepath = os.path.join(format_dir, filename)
-
-        # Save as human-readable export format
-        try:
-            manager.save_team_to_file(packed_team, filepath, as_export=True)
-            logger.info("RandomAgent[%s]: saved team to %s", self.username, filepath)
-        except Exception as e:
-            logger.warning("RandomAgent[%s]: failed to save team: %s", self.username, e)
 
 
 # ---------------------------------------------------------------------------

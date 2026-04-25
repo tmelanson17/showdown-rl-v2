@@ -51,6 +51,7 @@ class BattleState:
     team_preview: bool = False
     raw_log: List[str] = field(default_factory=list)
     my_player_id: Optional[str] = None  # "p1" or "p2"
+    last_error: Optional[str] = None  # last |error| from a rejected choice
 
 
 class PSClient:
@@ -101,6 +102,9 @@ class PSClient:
         # Query responses (keyed by query type, e.g. "userdetails")
         self._query_responses: Dict[str, Any] = {}
 
+        # Ladder search state
+        self._searching: bool = False
+
         # Callbacks
         self._on_challenge: Optional[Callable[[str, str], None]] = None
         self._on_battle_start: Optional[Callable[[str], None]] = None
@@ -147,6 +151,9 @@ class PSClient:
 
     def disconnect(self) -> None:
         """Disconnect from the server."""
+        # If in an existing battle, forfeit
+        if self._active_battle:
+            self.forfeit()
         self._connected = False
         if self._ws:
             try:
@@ -167,6 +174,8 @@ class PSClient:
                 if self._connected:
                     logger.error("PSClient: reader error: %s", e)
                 break
+        # Mark disconnected so callers (wait_for_request, etc.) don't block forever
+        self._connected = False
 
     def _send(self, message: str) -> None:
         """Send a message to the server."""
@@ -247,6 +256,24 @@ class PSClient:
                 except json.JSONDecodeError:
                     pass
 
+        elif msg_type == "updatesearch":
+            # |updatesearch|{"searching":["gen9randombattle"],"games":null}
+            if len(parts) >= 3:
+                logger.info("Message parts: %s|%s|%s", parts[0], parts[1], parts[2])
+                try:
+                    search = json.loads(parts[2])
+                    searching = search.get("searching", [])
+                    games = search.get("games")
+                    self._searching = bool(searching)
+                    if searching:
+                        logger.info("PSClient: searching ladder for %s", searching)
+                    elif games:
+                        logger.info(
+                            "PSClient: matched into game(s): %s", list(games.keys())
+                        )
+                except json.JSONDecodeError:
+                    pass
+
         elif msg_type == "popup":
             # |popup|message
             if len(parts) >= 3:
@@ -263,7 +290,9 @@ class PSClient:
                     self._query_responses[query_type] = json.loads(payload)
                 except json.JSONDecodeError:
                     self._query_responses[query_type] = payload
-                logger.debug("PSClient: queryresponse[%s]: %s", query_type, payload[:200])
+                logger.debug(
+                    "PSClient: queryresponse[%s]: %s", query_type, payload[:200]
+                )
 
         elif msg_type == "pm":
             # |pm|~|~|/challenge opponent,format
@@ -274,6 +303,8 @@ class PSClient:
 
         # Battle messages
         elif room.startswith("battle-"):
+            if msg_type == "init" and parts[2] == "battle":
+                self._update_battle_room(room)
             self._parse_battle_message(room, msg_type, parts)
 
         # Check for other message types as needed (e.g., lobby chat, etc.)
@@ -290,13 +321,17 @@ class PSClient:
                 parts[2].split(",")[0] if len(parts) > 2 else "?",
             )
 
+    def _update_battle_room(self, room: str) -> None:
+        self._battles[room] = BattleState(room_id=room)
+        self._active_battle = room
+        logger.info("PSClient: joined battle %s", room)
+
     def _parse_battle_message(self, room: str, msg_type: str, parts: List[str]) -> None:
         """Parse battle-specific messages."""
         # Get or create battle state
         if room not in self._battles:
-            self._battles[room] = BattleState(room_id=room)
-            self._active_battle = room
-            logger.info("PSClient: joined battle %s", room)
+            logging.error("PSClient: battle not found: %s", room)
+            return
 
         state = self._battles[room]
 
@@ -332,6 +367,7 @@ class PSClient:
 
         elif msg_type == "win":
             if len(parts) >= 3:
+                logger.info("Win message: %s", "|".join(parts))
                 state.winner = parts[2]
                 logger.info("PSClient: battle won by %s", state.winner)
                 if self._on_battle_end:
@@ -351,6 +387,11 @@ class PSClient:
 
         elif msg_type == "teampreview":
             state.team_preview = True
+
+        elif msg_type == "error":
+            error_text = "|".join(parts[2:]) if len(parts) > 2 else "unknown error"
+            state.last_error = error_text
+            logger.warning("PSClient: choice rejected in %s: %s", room, error_text)
 
     def login_guest(self) -> bool:
         """Login as a guest (no authentication required)."""
@@ -448,6 +489,41 @@ class PSClient:
 
         logger.warning("PSClient: userdetails query for %s timed out", username)
         return False
+
+    def search_ladder(self, format_id: str, team: Optional[str] = None) -> bool:
+        """Enter the matchmaking queue for a ladder format.
+
+        Args:
+            format_id: Battle format (e.g., "gen9randombattle", "gen3ou").
+            team: Packed team string (required for non-random formats).
+
+        Returns:
+            True if the search command was sent successfully.
+        """
+        if not self._connected:
+            logger.error("PSClient: not connected")
+            return False
+        if team:
+            logger.info("Uploading team for %s", format_id)
+            self._send(f"|/utm {team}")
+        else:
+            logger.info("Clearing team slot for %s", format_id)
+            self._send("|/utm null")
+        logger.info(f"Sending search command: |/search {format_id}")
+        self._send(f"|/search {format_id}")
+        logger.info("PSClient: entered ladder queue for %s", format_id)
+        return True
+
+    def cancel_search(self) -> None:
+        """Cancel an active ladder search."""
+        self._send("|/cancelsearch")
+        self._searching = False
+        logger.info("PSClient: cancelled ladder search")
+
+    def reset_battle(self) -> None:
+        """Clear battle state between games (use before searching for the next game)."""
+        self._battles.clear()
+        self._active_battle = None
 
     def join_room(self, room: str) -> None:
         """Join a chat room."""
@@ -594,6 +670,8 @@ class PSClient:
 
         if team:
             self._send(f"|/utm {team}")
+        else:
+            self._send("|/utm null")
 
         self._send(f"|/challenge {target_user}, {format_id}")
 
@@ -617,6 +695,30 @@ class PSClient:
     def cancel_challenge(self) -> None:
         """Cancel outgoing challenge."""
         self._send("|/cancelchallenge")
+
+    def send_timer_on(self) -> None:
+        """Enable the battle timer in the active battle room."""
+        if not self._active_battle:
+            logger.warning("PSClient: no active battle, cannot enable timer")
+            return
+        self._send_to_room(self._active_battle, "/timer on")
+        logger.info("PSClient: timer enabled in %s", self._active_battle)
+
+    def get_and_clear_battle_error(self) -> Optional[str]:
+        """Return and clear any pending choice-rejection error for the active battle."""
+        if not self._active_battle:
+            return None
+        state = self._battles.get(self._active_battle)
+        if state and state.last_error:
+            err = state.last_error
+            state.last_error = None
+            return err
+        return None
+
+    def clear_pending_request(self) -> None:
+        """Discard any pending re-sent request (used after a rejected choice to prevent double-processing)."""
+        if self._active_battle and self._active_battle in self._battles:
+            self._battles[self._active_battle].request = None
 
     def choose(self, choice: str) -> None:
         """Make a choice in the active battle.
@@ -671,6 +773,9 @@ class PSClient:
 
         start = time.time()
         while time.time() - start < timeout:
+            if not self._connected:
+                logger.warning("PSClient: connection lost while waiting for request")
+                return None
             if state.request:
                 req = state.request
                 state.request = None  # Clear after reading

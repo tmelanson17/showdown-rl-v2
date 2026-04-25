@@ -15,17 +15,13 @@ LLMModelAgent is kept as a backward-compatible alias for OllamaModelAgent.
 
 from __future__ import annotations
 import abc
-import os
 import re
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional
 
 from ps_types import GameState, Action
 from agents import Agent
 from llm_logger import LLMLogger
-
-if TYPE_CHECKING:
-    from teams import TeamManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +31,7 @@ MAX_QUESTION_CHARS = 1800
 # ---------------------------------------------------------------------------
 # Base class — shared HTTP query logic, action parsing, and game loop
 # ---------------------------------------------------------------------------
+
 
 class _BaseHTTPModelAgent(Agent):
     """Base for agents that query an Ollama-compatible HTTP model server."""
@@ -49,17 +46,12 @@ class _BaseHTTPModelAgent(Agent):
         battle_format: str = "gen9ou",
         model_name: str | None = None,
         ollama_url: str | None = None,
-        teams_dir: str = "teams",
         log_path: str | None = None,
-        team_index: int | None = None,
     ) -> None:
         super().__init__(player_number, username)
         self.battle_format = battle_format
         self.model_name = model_name or self.DEFAULT_MODEL
         self.ollama_url = ollama_url or self.DEFAULT_OLLAMA_URL
-        self.teams_dir = teams_dir
-        self._team_index = team_index
-        self._team_cache: dict[str, str] = {}
         self._llm_logger = LLMLogger(log_path) if log_path else None
 
         self.action_history: List[str] = []
@@ -68,6 +60,7 @@ class _BaseHTTPModelAgent(Agent):
 
         try:
             import requests
+
             self._requests = requests
         except ImportError:
             raise ImportError(
@@ -123,17 +116,25 @@ class _BaseHTTPModelAgent(Agent):
             elif msg_type in ("switch", "drag"):
                 if len(parts) >= 4:
                     pokemon = parts[3].split(",")[0]
-                    player = "You" if f"p{self.player_number}" in parts[2] else "Opponent"
+                    player = (
+                        "You" if f"p{self.player_number}" in parts[2] else "Opponent"
+                    )
                     events.append(f"{player} sent out {pokemon}")
 
             elif msg_type == "-status":
                 if len(parts) >= 4:
                     pokemon = parts[2].split(": ")[-1] if ": " in parts[2] else parts[2]
                     status_names = {
-                        "brn": "burned", "par": "paralyzed", "slp": "fell asleep",
-                        "frz": "frozen", "psn": "poisoned", "tox": "badly poisoned",
+                        "brn": "burned",
+                        "par": "paralyzed",
+                        "slp": "fell asleep",
+                        "frz": "frozen",
+                        "psn": "poisoned",
+                        "tox": "badly poisoned",
                     }
-                    events.append(f"{pokemon} was {status_names.get(parts[3], parts[3])}")
+                    events.append(
+                        f"{pokemon} was {status_names.get(parts[3], parts[3])}"
+                    )
 
             elif msg_type == "-supereffective":
                 events.append("It's super effective!")
@@ -199,19 +200,29 @@ class _BaseHTTPModelAgent(Agent):
             if action.label.lower() in response_lower:
                 logger.info("Matched action by partial label: %s", action.label)
                 return action
+            label_no_space = action.label.lower().replace(" ", "")
+            if label_no_space in response_lower:
+                logger.info("Matched fuzzy label: %s", action.label)
+                return action
 
         # Strategy 4: type keywords
         for keyword in ("use", "attack", "move"):
             if keyword in response_lower:
                 for action in available_actions:
-                    if action.action_type == "move" and action.label.lower() in response_lower:
+                    if (
+                        action.action_type == "move"
+                        and action.label.lower() in response_lower
+                    ):
                         logger.info("Matched move action: %s", action.label)
                         return action
 
         for keyword in ("switch", "swap", "go"):
             if keyword in response_lower:
                 for action in available_actions:
-                    if action.action_type == "switch" and action.label.lower() in response_lower:
+                    if (
+                        action.action_type == "switch"
+                        and action.label.lower() in response_lower
+                    ):
                         logger.info("Matched switch action: %s", action.label)
                         return action
 
@@ -226,7 +237,11 @@ class _BaseHTTPModelAgent(Agent):
                 best_match = action
 
         if best_match and best_score > 0:
-            logger.info("Matched action by word overlap: %s (score=%d)", best_match.label, best_score)
+            logger.info(
+                "Matched action by word overlap: %s (score=%d)",
+                best_match.label,
+                best_score,
+            )
             return best_match
 
         return None
@@ -277,7 +292,10 @@ class _BaseHTTPModelAgent(Agent):
                         {"action_type": a.action_type, "label": a.label}
                         for a in available_actions
                     ],
-                    chosen_action={"action_type": action.action_type, "label": action.label},
+                    chosen_action={
+                        "action_type": action.action_type,
+                        "label": action.label,
+                    },
                     parse_success=parse_success,
                 )
 
@@ -289,40 +307,16 @@ class _BaseHTTPModelAgent(Agent):
         except Exception as e:
             logger.error("Error during model query: %s", e)
             import random
+
             action = random.choice(available_actions)
             logger.warning("Falling back to random action: %s", action.label)
             return action
-
-    def get_team(self, format_id: str) -> Optional[str]:
-        if "random" in format_id.lower():
-            return None
-        if format_id in self._team_cache:
-            return self._team_cache[format_id]
-
-        from teams import TeamManager
-        manager = TeamManager(teams_dir=self.teams_dir)
-        packed_team = manager.get_sample_team(format_id, team_index=self._team_index)
-        self._save_team(format_id, packed_team, manager)
-        self._team_cache[format_id] = packed_team
-        logger.info("%s[%s]: loaded team for %s", type(self).__name__, self.username, format_id)
-        return packed_team
-
-    def _save_team(self, format_id: str, packed_team: str, manager: "TeamManager") -> None:
-        os.makedirs(self.teams_dir, exist_ok=True)
-        format_dir = os.path.join(self.teams_dir, format_id)
-        os.makedirs(format_dir, exist_ok=True)
-        import time
-        filepath = os.path.join(format_dir, f"team_{self.username}_{int(time.time())}.txt")
-        try:
-            manager.save_team_to_file(packed_team, filepath, as_export=True)
-            logger.info("%s[%s]: saved team to %s", type(self).__name__, self.username, filepath)
-        except Exception as e:
-            logger.warning("%s[%s]: failed to save team: %s", type(self).__name__, self.username, e)
 
 
 # ---------------------------------------------------------------------------
 # OllamaModelAgent — English-formatted prompt for instruction-following LLMs
 # ---------------------------------------------------------------------------
+
 
 class OllamaModelAgent(_BaseHTTPModelAgent):
     """Agent that uses an Ollama-hosted LLM to make battle decisions.
@@ -334,7 +328,11 @@ class OllamaModelAgent(_BaseHTTPModelAgent):
     DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
     def _stringify_game_state(self, gamestate: GameState) -> str:
-        lines = [f"Turn: {gamestate.turn}", f"Active Player: Player {gamestate.active_player}", ""]
+        lines = [
+            f"Turn: {gamestate.turn}",
+            f"Active Player: Player {gamestate.active_player}",
+            "",
+        ]
         for side in gamestate.sides:
             is_my_side = side.player_id == self.player_number
             marker = " (YOU)" if is_my_side else " (OPPONENT)"
@@ -345,8 +343,12 @@ class OllamaModelAgent(_BaseHTTPModelAgent):
                 for i, poke in enumerate(side.pokemon):
                     active_tag = " [ACTIVE]" if poke.is_active else ""
                     status_tag = f" ({poke.status})" if poke.status else ""
-                    hp_display = "FAINTED" if poke.hp_pct == 0 else f"{poke.hp_pct * 100:.0f}%"
-                    lines.append(f"  {i + 1}. {poke.species}: {hp_display}{status_tag}{active_tag}")
+                    hp_display = (
+                        "FAINTED" if poke.hp_pct == 0 else f"{poke.hp_pct * 100:.0f}%"
+                    )
+                    lines.append(
+                        f"  {i + 1}. {poke.species}: {hp_display}{status_tag}{active_tag}"
+                    )
                     if is_my_side and poke.moves:
                         lines.append(f"     Moves: {', '.join(poke.moves)}")
             lines.append("")
@@ -381,7 +383,7 @@ class OllamaModelAgent(_BaseHTTPModelAgent):
             f"{actions_str}\n\n"
             f"IMPORTANT: You must respond with ONLY the the exact action name from the list above.\n"
             f"Think about type matchups, HP levels, and status conditions when making your decision.\n"
-            f"Do NOT include any explanation - just the action name.\n\n"
+            f"Do NOT include any explanation - just the action name. Be sure to put spaces in moves that consist of multiple words. \n\n"
             f"Your choice:"
         )
 
@@ -389,6 +391,7 @@ class OllamaModelAgent(_BaseHTTPModelAgent):
 # ---------------------------------------------------------------------------
 # BERTModelAgent — raw PS protocol for the locally trained RoBERTa QA model
 # ---------------------------------------------------------------------------
+
 
 class BERTModelAgent(_BaseHTTPModelAgent):
     """Agent that uses the locally trained RoBERTa QA model on port 11435.
@@ -417,6 +420,7 @@ LLMModelAgent = OllamaModelAgent
 # Test functions
 # ---------------------------------------------------------------------------
 
+
 def test_llm_vs_random():
     """Test the LLM agent against a RandomAgent using the GameRunner."""
     import logging
@@ -442,17 +446,24 @@ def test_llm_vs_random():
     print("\nChecking Ollama connection...")
     try:
         import requests
-        response = requests.get(f"{OllamaModelAgent.DEFAULT_OLLAMA_URL}/api/tags", timeout=5)
+
+        response = requests.get(
+            f"{OllamaModelAgent.DEFAULT_OLLAMA_URL}/api/tags", timeout=5
+        )
         if response.status_code == 200:
             models = response.json().get("models", [])
             model_names = [m.get("name", m.get("model", "unknown")) for m in models]
             print(f"Ollama is running. Available models: {model_names}")
             if not model_names:
-                print("WARNING: No models installed. Install one with: ollama pull llama3.2")
+                print(
+                    "WARNING: No models installed. Install one with: ollama pull llama3.2"
+                )
         else:
             print(f"Warning: Ollama returned status {response.status_code}")
     except Exception:
-        print(f"ERROR: Cannot connect to Ollama at {OllamaModelAgent.DEFAULT_OLLAMA_URL}")
+        print(
+            f"ERROR: Cannot connect to Ollama at {OllamaModelAgent.DEFAULT_OLLAMA_URL}"
+        )
         print("Please ensure Ollama is running with: ollama serve")
         return
 
@@ -471,7 +482,9 @@ def test_llm_vs_random():
         return
 
     def llm_agent_factory(player_num, username):
-        return OllamaModelAgent(player_number=player_num, username=username, battle_format=FORMAT)
+        return OllamaModelAgent(
+            player_number=player_num, username=username, battle_format=FORMAT
+        )
 
     def random_agent_factory(player_num, username):
         return RandomAgent(player_num, username)
@@ -527,11 +540,24 @@ def test_llm_query():
         PokemonSlot(species="Raichu", hp_pct=1.0, status=None, is_active=False),
     ]
     available_actions = [
-        Action(action_id="move 1", action_type="move", target_index=1, label="Flamethrower"),
-        Action(action_id="move 2", action_type="move", target_index=2, label="Dragon Claw"),
-        Action(action_id="move 3", action_type="move", target_index=3, label="Earthquake"),
-        Action(action_id="switch 2", action_type="switch", target_index=2, label="Blastoise"),
-        Action(action_id="switch 3", action_type="switch", target_index=3, label="Venusaur"),
+        Action(
+            action_id="move 1", action_type="move", target_index=1, label="Flamethrower"
+        ),
+        Action(
+            action_id="move 2", action_type="move", target_index=2, label="Dragon Claw"
+        ),
+        Action(
+            action_id="move 3", action_type="move", target_index=3, label="Earthquake"
+        ),
+        Action(
+            action_id="switch 2",
+            action_type="switch",
+            target_index=2,
+            label="Blastoise",
+        ),
+        Action(
+            action_id="switch 3", action_type="switch", target_index=3, label="Venusaur"
+        ),
     ]
     gamestate = GameState(
         turn=5,

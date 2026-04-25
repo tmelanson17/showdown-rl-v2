@@ -301,6 +301,67 @@ class TeamManager:
         return problems
 
 
+# ---------------------------------------------------------------------------
+# TeamBuilder — caching wrapper around TeamManager for a single player slot
+# ---------------------------------------------------------------------------
+
+class TeamBuilder:
+    """Handles team selection for a single player slot.
+
+    Wraps TeamManager with caching and optional persistence.
+    """
+
+    def __init__(
+        self,
+        teams_dir: str = "teams",
+        team_index: Optional[int] = None,
+        name: str = "agent",
+    ) -> None:
+        self.teams_dir = teams_dir
+        self._team_index = team_index
+        self._name = name
+        self._team_cache: Dict[str, str] = {}
+
+    def get_team(self, format_id: str) -> Optional[str]:
+        """Return a packed team string, or None for random-battle formats."""
+        if "random" in format_id.lower():
+            return None
+        if format_id in self._team_cache:
+            return self._team_cache[format_id]
+        manager = TeamManager(teams_dir=self.teams_dir)
+        packed_team = manager.get_sample_team(format_id, team_index=self._team_index)
+        self._save_team(format_id, packed_team, manager)
+        self._team_cache[format_id] = packed_team
+        logger.info("TeamBuilder[%s]: loaded team for %s", self._name, format_id)
+        return packed_team
+
+    def invalidate_cache(self, format_id: str) -> None:
+        """Evict a cached team so the next call fetches a fresh one."""
+        self._team_cache.pop(format_id, None)
+
+    def _save_team(
+        self, format_id: str, packed_team: str, manager: TeamManager
+    ) -> None:
+        """Save the team to a file for future reference."""
+        import time
+
+        os.makedirs(self.teams_dir, exist_ok=True)
+        format_dir = os.path.join(self.teams_dir, format_id)
+        os.makedirs(format_dir, exist_ok=True)
+        filepath = os.path.join(
+            format_dir, f"team_{self._name}_{int(time.time())}.txt"
+        )
+        try:
+            manager.save_team_to_file(packed_team, filepath, as_export=True)
+            logger.info(
+                "TeamBuilder[%s]: saved team to %s", self._name, filepath
+            )
+        except Exception as e:
+            logger.warning(
+                "TeamBuilder[%s]: failed to save team: %s", self._name, e
+            )
+
+
 # Convenience function
 def get_random_team(format_id: str = "gen9ou") -> str:
     """Get a random valid team for the specified format."""

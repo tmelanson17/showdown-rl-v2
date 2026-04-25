@@ -1,57 +1,61 @@
 #!/usr/bin/env python3
 """
-Run a Pokemon Showdown battle with an LLM agent against a human player.
+Run a Pokemon Showdown ladder bot.
 
 Usage:
-    python run_human_in_loop.py [--human NAME] [--format FORMAT] [--timeout SECONDS]
+    python run_ladder.py --bot-name MyBot --password mypass [options]
 
 Example:
-    python run_human_in_loop.py --human ctjn17 --format gen3ou --timeout 1800
+    python run_ladder.py --bot-name MyBot --password mypass --format gen9randombattle --num-games 5
 """
 
 import argparse
 import logging
-import random
-import string
 
-from game_runner import HumanGameRunner
+from game_runner import LadderGameRunner
 from model_agent import OllamaModelAgent, BERTModelAgent
+from agents import RandomAgent
 from teams import TeamBuilder
+from stats_logger import StatsLogger
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run a Pokemon Showdown battle with LLM agent vs human"
+    parser = argparse.ArgumentParser(description="Run a Pokemon Showdown ladder bot")
+    parser.add_argument(
+        "--bot-name",
+        type=str,
+        required=True,
+        help="Registered PS username for the bot",
     )
     parser.add_argument(
-        "--human",
+        "--password",
         type=str,
-        default="ctjn17",
-        help="Username of the human player (default: ctjn17)",
+        required=True,
+        help="Password for the bot's PS account (required for ladder)",
     )
     parser.add_argument(
         "--format",
         type=str,
-        default="gen3ou",
-        help="Battle format (default: gen3ou)",
+        default="gen9randombattle",
+        help="Battle format (default: gen9randombattle)",
+    )
+    parser.add_argument(
+        "--num-games",
+        type=int,
+        default=1,
+        help="Number of ladder games to play (default: 1)",
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=1800,
-        help="Timeout in seconds (default: 1800 = 30 minutes)",
+        help="Timeout per game in seconds (default: 1800 = 30 minutes)",
     )
     parser.add_argument(
         "--server",
         type=str,
-        default="ws://localhost:8000/showdown/websocket",
-        help="Pokemon Showdown server URL",
-    )
-    parser.add_argument(
-        "--bot-name",
-        type=str,
-        default=None,
-        help="Bot username (default: auto-generated LLMBotXXXXXX)",
+        default="wss://sim3.psim.us/showdown/websocket",
+        help="Pokemon Showdown server URL (default: main server)",
     )
     parser.add_argument(
         "--model",
@@ -82,49 +86,41 @@ def main():
         default=None,
         help="0-based index of built-in team to use (skips saved team files)",
     )
-    parser.add_argument(
-        "--password",
-        type=str,
-        default=None,
-        help="Password for the bot (default: None)",
-    )
 
     args = parser.parse_args()
 
-    # Setup logging
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    # Generate bot name if not provided
-    bot_name = args.bot_name
-    if bot_name is None:
-        bot_name = "LLMBot" + "".join(random.choices(string.digits, k=6))
-
     print("=" * 60)
-    print(f"Pokemon Showdown - {bot_name} (LLM) vs Human")
+    print(f"Pokemon Showdown Ladder Bot — {args.bot_name}")
     print(f"Format: {args.format}")
-    print(f"Model: {args.model}")
+    print(f"Games:  {args.num_games}")
+    print(f"Model:  {args.model}")
     print("=" * 60)
 
     # Create team builder only for non-random formats
     team_builder = (
         None
         if "random" in args.format.lower()
-        else TeamBuilder(team_index=args.team_index, name=bot_name)
+        else TeamBuilder(team_index=args.team_index, name=args.bot_name)
     )
 
-    # Create agent factory
     def agent_factory(player_number, username):
         if args.model == "bert":
             return BERTModelAgent(
                 player_number=player_number,
                 username=username,
                 battle_format=args.format,
-                ollama_url="http://tj-training.tail38a3b.ts.net:11435",
                 log_path=args.log_path,
+            )
+        elif args.model == "random":
+            return RandomAgent(
+                player_number=player_number,
+                username=username,
             )
         return OllamaModelAgent(
             player_number=player_number,
@@ -135,34 +131,29 @@ def main():
             log_path=args.log_path,
         )
 
-    # Create and run the game runner
-    runner = HumanGameRunner(
+    runner = LadderGameRunner(
         agent_factory=agent_factory,
-        agent_username=bot_name,
-        human_username=args.human,
+        agent_username=args.bot_name,
         format=args.format,
         server_url=args.server,
         password=args.password,
         team_builder=team_builder,
+        stats_logger=StatsLogger(agent_username=args.bot_name),
     )
 
     print("\nConnecting...")
-    if runner.connect():
-        print(f"SUCCESS! Logged in as {bot_name}")
-        print(
-            f"\n>>> Go to {args.server.replace('wss://', 'https://').replace('/websocket', '')} and log in as {args.human} to accept the challenge.\n"
-        )
-        print(f">>> Log in as {args.human}")
-        print(f">>> Accept the challenge from {bot_name}!")
-        print(f"\nWaiting for battle ({args.timeout // 60} min timeout)...\n")
-
-        winner = runner.run(timeout=args.timeout)
-
-        print(f"\nFinal result: {winner}")
-        runner.disconnect()
-    else:
-        print("FAILED to connect or login")
+    if not runner.connect():
+        print("FAILED to connect or login.")
         return 1
+
+    print(f"Logged in as {args.bot_name}\n")
+
+    results = runner.run(num_games=args.num_games, timeout=args.timeout)
+    runner.disconnect()
+
+    wins = sum(1 for r in results if r and r.lower() == args.bot_name.lower())
+    losses = sum(1 for r in results if r and r.lower() != args.bot_name.lower())
+    print(f"\nFinal record: {wins}W / {losses}L ({len(results)} games)")
 
     return 0
 
