@@ -262,8 +262,16 @@ if __name__ == "__main__":
         Move(Type.FIRE, category=MoveCategory.SPECIAL, bp=150, name="Weather Ball"),
         get_pokemon("Scovillain-Mega"),
     )
+    ceruledge = get_pokemon("Ceruledge")
     calculate_expected_damages(
         charizard_mega_y,
         Move(Type.GRASS, category=MoveCategory.SPECIAL, bp=120, name="Solar Beam"),
-        get_pokemon("Ceruledge"),
+        ceruledge,
+    )
+    aero = get_pokemon("Aerodactyl")
+    aero.evs = PokemonEvs(atk=252)
+    calculate_expected_damages(
+        aero,
+        Move(type=Type.ROCK, category=MoveCategory.PHYSICAL, bp=50, name="Rock Slide"),
+        ceruledge,
     )
