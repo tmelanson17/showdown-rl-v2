@@ -1,5 +1,10 @@
 # TODO
 
+## Damage Range Calculator (`find_set`)
+
+- [ ] Create a `Move` dataclass with `bp`, `category`, and `type` fields; refactor `get_damage_range` and `calculate_expected_damages` to accept a `Move` instead of `move_bp` / `move_cat` directly
+- [ ] Add `find_set/type_effectiveness.py` defining the full type chart and a function that returns the effectiveness multiplier given a move type and the defender's type(s); wire it into the damage calculator for automatic type effectiveness and STAB determination
+
 ## Dataset Creation
 
 - [ ] Check if the dataset creation takes into account the user being trapped / taunted / otherwise limited in options from a previous turn

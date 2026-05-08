@@ -198,7 +198,10 @@ if __name__ == "__main__":
         name="Garchomp",
         level=50,
     )
-    archaludon_base = Stat(hp=90, atk=105, defn=130, spatk=125, spdef=65, speed=85)
+    from scrape_stats import get_base_stats
+
+    archaludon_base = get_base_stats("Archaludon")
+    farigiraf_base = get_base_stats("Farigiraf")
 
     def calculate_expected_damages(
         attacker: PokemonStats, defender_base: Stat, defender_name: str
@@ -218,8 +221,10 @@ if __name__ == "__main__":
         print("Damage ranges: ")
         offensive, bulky = get_percentage(defender_base.hp, max_damage)
         _, defensive = get_percentage(defender_base.hp, min_damage)
-        print(f"Offensive: {offensive:.02f}")
-        print(f"Bulky:  {bulky:.02f}")
-        print(f"Defensive:  {defensive:.02f}")
+        print(f"Offensive: {offensive:.01f}%")
+        print(f"Bulky:  {bulky:.01f}%")
+        print(f"Defensive:  {defensive:.01f}%")
 
     calculate_expected_damages(garchomp, archaludon_base, "Archaludon")
+    print(f"Farigiraf base HP / DEF : {farigiraf_base.hp} / {farigiraf_base.defn}")
+    calculate_expected_damages(garchomp, get_base_stats("Floette-Mega"), "Floette-Mega")
