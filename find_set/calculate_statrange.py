@@ -1,8 +1,10 @@
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
-from datatypes import Stat, Ivs, PokemonEvs, MoveCategory
-from nature import Nature, BOOSTING, NEUTRAL, get_info, get_boost
+from datatypes import Stat, Ivs, PokemonEvs, MoveCategory, Move, Type
+from nature import BOOSTING, NEUTRAL, get_boost
+from type_chart import get_type_effectiveness
 
 MIN_DAMAGE_ROLL = 0.85
 MAX_DAMAGE_ROLL = 1.0
@@ -93,10 +95,12 @@ def find_attack_range(
 @dataclass
 class PokemonStats:
     base_stats: Stat
-    evs: PokemonEvs
     nature: str
     level: int
+    type1: Type
+    type2: Optional[Type]
     name: str
+    evs: Optional[PokemonEvs] = None
     ivs: Ivs = field(default_factory=Ivs.all_max)
 
 
@@ -115,6 +119,7 @@ def get_damage_range(
     burn: float = 1.0,
     weather: float = 1.0,
 ):
+    assert attacker.evs is not None, "You need to add EV's to the attacking Pokemon"
     attack_stat = calculate_stat(
         move_cat.get_attacking_stat(attacker.base_stats),
         move_cat.get_attacking_stat(attacker.evs),
@@ -194,37 +199,71 @@ if __name__ == "__main__":
     garchomp = PokemonStats(
         base_stats=Stat(hp=108, atk=130, defn=95, spatk=80, spdef=85, speed=102),
         evs=PokemonEvs(atk=252),
+        type1=Type.DRAGON,
+        type2=Type.GROUND,
         nature="Adamant",
         name="Garchomp",
         level=50,
     )
-    from scrape_stats import get_base_stats
+    stomping_tantrum = Move(
+        type=Type.GROUND, category=MoveCategory.PHYSICAL, bp=75, name="Stomping Tantrum"
+    )
+
+    from scrape_stats import get_base_stats, get_type
+    from datatypes import PokemonEvs
 
     archaludon_base = get_base_stats("Archaludon")
-    farigiraf_base = get_base_stats("Farigiraf")
+
+    def get_pokemon(name: str, level: int = 50):
+        base_stats = get_base_stats(name)
+        type1, type2 = get_type(name)
+        return PokemonStats(base_stats, "Docile", level, type1, type2, name)
 
     def calculate_expected_damages(
-        attacker: PokemonStats, defender_base: Stat, defender_name: str
+        attacker: PokemonStats, move: Move, defender: PokemonStats
     ):
+        print(
+            f"Effectiveness: {get_type_effectiveness(move.type, defender.type1, defender.type2)}"
+        )
         min_damage, max_damage = get_damage_range(
-            garchomp,
-            defender_base,
+            attacker,
+            defender.base_stats,
             defender_level=50,
-            move_bp=75,
-            move_cat=MoveCategory.PHYSICAL,
-            stab=1.5,
-            effectiveness=2.0,
+            move_bp=move.bp,
+            move_cat=move.category,
+            stab=move.stab(attacker.type1, attacker.type2),
+            effectiveness=get_type_effectiveness(
+                move.type, defender.type1, defender.type2
+            ),
         )
         print(
-            f"Expected Stomping Tantrum damage from {attacker.name} into {defender_name}: {min_damage}-{max_damage}"
+            f"Expected {move.name} damage from {attacker.name} into {defender.name}: {min_damage}-{max_damage}"
         )
         print("Damage ranges: ")
-        offensive, bulky = get_percentage(defender_base.hp, max_damage)
-        _, defensive = get_percentage(defender_base.hp, min_damage)
+        offensive, bulky = get_percentage(defender.base_stats.hp, max_damage)
+        _, defensive = get_percentage(defender.base_stats.hp, min_damage)
         print(f"Offensive: {offensive:.01f}%")
         print(f"Bulky:  {bulky:.01f}%")
         print(f"Defensive:  {defensive:.01f}%")
 
-    calculate_expected_damages(garchomp, archaludon_base, "Archaludon")
-    print(f"Farigiraf base HP / DEF : {farigiraf_base.hp} / {farigiraf_base.defn}")
-    calculate_expected_damages(garchomp, get_base_stats("Floette-Mega"), "Floette-Mega")
+    calculate_expected_damages(garchomp, stomping_tantrum, get_pokemon("Archaludon"))
+    calculate_expected_damages(
+        garchomp, stomping_tantrum, get_pokemon("Scovillain-Mega")
+    )
+    aegislash = get_pokemon("Aegislash")
+    aegislash.nature = "Adamant"
+    aegislash.evs = PokemonEvs(atk=252)
+    ironhead = Move(Type.STEEL, category=MoveCategory.PHYSICAL, bp=80, name="Iron Head")
+    calculate_expected_damages(aegislash, ironhead, get_pokemon("Floette-Mega"))
+    charizard_mega_y = get_pokemon("Charizard-Mega-Y")
+    charizard_mega_y.evs = PokemonEvs(spatk=252)
+    calculate_expected_damages(
+        charizard_mega_y,
+        Move(Type.FIRE, category=MoveCategory.SPECIAL, bp=150, name="Weather Ball"),
+        get_pokemon("Scovillain-Mega"),
+    )
+    calculate_expected_damages(
+        charizard_mega_y,
+        Move(Type.GRASS, category=MoveCategory.SPECIAL, bp=120, name="Solar Beam"),
+        get_pokemon("Ceruledge"),
+    )

@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(__file__))
-from datatypes import Stat
+from datatypes import Stat, Type
 
 _BASE_URL = "https://pokemondb.net/pokedex"
 
@@ -97,19 +97,23 @@ def _find_stats_in_panel(panel) -> Stat:
     raise ValueError("Base stats table not found in panel")
 
 
-def get_base_stats(name: str) -> Stat:
-    """Return base Stat for the given Pokémon name (e.g. 'Garchomp', 'Gengar-Mega')."""
-    base, form = _parse_name(name)
-    url = f"{_BASE_URL}/{base}"
-    resp = _SESSION.get(url)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+def _types_from_panel(panel) -> tuple[Type, Type | None]:
+    for table in panel.select("table.vitals-table"):
+        for row in table.select("tr"):
+            th = row.find("th")
+            if th and th.get_text(strip=True) == "Type":
+                icons = row.select("a.type-icon")
+                t1 = Type[icons[0].get_text(strip=True).upper()]
+                t2 = Type[icons[1].get_text(strip=True).upper()] if len(icons) > 1 else None
+                return t1, t2
+    raise ValueError("Type row not found in panel")
 
-    tabset = soup.select_one("div.tabset-basics")
 
+def _resolve_panel(name: str, soup, tabset):
+    """Return the correct panel BeautifulSoup element for the given parsed name."""
+    _, form = _parse_name(name)
     if form is None or tabset is None:
-        panel = tabset or soup
-        return _find_stats_in_panel(panel)
+        return tabset or soup
 
     tabs = tabset.select("a.sv-tabs-tab")
     panels = tabset.select("div.sv-tabs-panel")
@@ -117,15 +121,38 @@ def get_base_stats(name: str) -> Stat:
         raise ValueError(
             f"Tab/panel count mismatch for {name}: {len(tabs)} tabs, {len(panels)} panels"
         )
-
     form_words = set(form.lower().split())
     for tab, panel in zip(tabs, panels):
         tab_words = set(tab.get_text(strip=True).lower().split())
         if form_words.issubset(tab_words):
-            return _find_stats_in_panel(panel)
+            return panel
 
     available = [t.get_text(strip=True) for t in tabs]
     raise ValueError(f"Form '{form}' not found for {name}. Available tabs: {available}")
+
+
+def _fetch_panel(name: str):
+    base, _ = _parse_name(name)
+    url = f"{_BASE_URL}/{base}"
+    resp = _SESSION.get(url)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    tabset = soup.select_one("div.tabset-basics")
+    return _resolve_panel(name, soup, tabset)
+
+
+def get_base_stats(name: str) -> Stat:
+    """Return base Stat for the given Pokémon name (e.g. 'Garchomp', 'Gengar-Mega')."""
+    return _find_stats_in_panel(_fetch_panel(name))
+
+
+def get_type(name: str) -> tuple[Type, Type | None]:
+    """Return (primary_type, secondary_type) in uppercase for the given Pokémon name.
+
+    secondary_type is None for single-type Pokémon.
+    Example: get_type('Garchomp') -> ('DRAGON', 'GROUND')
+    """
+    return _types_from_panel(_fetch_panel(name))
 
 
 if __name__ == "__main__":
@@ -141,19 +168,39 @@ if __name__ == "__main__":
         ("Floette-Mega", Stat(hp=74, atk=85, defn=87, spatk=155, spdef=148, speed=102)),
     ]
 
+    type_tests = [
+        ("Garchomp", (Type.DRAGON, Type.GROUND)),
+        ("Feraligatr", (Type.WATER, None)),
+        ("Feraligatr-Mega", (Type.WATER, Type.DRAGON)),
+    ]
+
     all_passed = True
     for pokemon_name, expected in tests:
         try:
             result = get_base_stats(pokemon_name)
             ok = result == expected
             status = "PASS" if ok else "FAIL"
-            print(f"{status} {pokemon_name}")
+            print(f"{status} stats {pokemon_name}")
             if not ok:
                 print(f"  expected: {expected}")
                 print(f"  got:      {result}")
                 all_passed = False
         except Exception as exc:
-            print(f"ERROR {pokemon_name}: {exc}")
+            print(f"ERROR stats {pokemon_name}: {exc}")
+            all_passed = False
+
+    for pokemon_name, expected in type_tests:
+        try:
+            result = get_type(pokemon_name)
+            ok = result == expected
+            status = "PASS" if ok else "FAIL"
+            print(f"{status} type  {pokemon_name}")
+            if not ok:
+                print(f"  expected: {expected}")
+                print(f"  got:      {result}")
+                all_passed = False
+        except Exception as exc:
+            print(f"ERROR type  {pokemon_name}: {exc}")
             all_passed = False
 
     sys.exit(0 if all_passed else 1)

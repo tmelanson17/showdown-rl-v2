@@ -1,5 +1,6 @@
 import enum
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -44,3 +45,39 @@ class MoveCategory(enum.Enum):
 
     def get_defending_stat_name(self) -> str:
         return "defn" if self == MoveCategory.PHYSICAL else "spdef"
+
+
+class Type(enum.Enum):
+    NORMAL = 1
+    FIRE = 2
+    WATER = 3
+    GRASS = 4
+    ELECTRIC = 5
+    FLYING = 6
+    BUG = 7
+    POISON = 8
+    ROCK = 9
+    GROUND = 10
+    FIGHTING = 11
+    ICE = 12
+    PSYCHIC = 13
+    GHOST = 14
+    DRAGON = 15
+    DARK = 16
+    STEEL = 17
+    FAIRY = 18
+
+
+@dataclass
+class Move:
+    type: Type
+    category: MoveCategory
+    bp: int
+    name: str
+
+    def stab(self, type1: Type, type2: Optional[Type]) -> float:
+        return (
+            1.5
+            if self.type == type1 or (type2 is not None and self.type == type2)
+            else 1.0
+        )
