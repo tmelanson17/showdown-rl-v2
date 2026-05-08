@@ -79,7 +79,7 @@ function calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs,
     ...(ability ? { ability } : {}),
   });
   const defender = makeMew();
-  const field = new Field(fieldOpts);
+  const field = new Field({ ...fieldOpts, gameType: "Doubles" });
 
   let move;
   try {
