@@ -159,7 +159,42 @@ def get_percentage(base_hp, damage, level=50):
     return (damage / min_hp) * 100, (damage / max_hp) * 100
 
 
+def get_pokemon(name: str, level: int = 50):
+    base_stats = get_base_stats(name)
+    type1, type2 = get_type(name)
+    return PokemonStats(base_stats, "Docile", level, type1, type2, name)
+
+
+def calculate_expected_damages(
+    attacker: PokemonStats, move: Move, defender: PokemonStats
+):
+    print(
+        f"Effectiveness: {get_type_effectiveness(move.type, defender.type1, defender.type2)}"
+    )
+    min_damage, max_damage = get_damage_range(
+        attacker,
+        defender.base_stats,
+        defender_level=50,
+        move_bp=move.bp,
+        move_cat=move.category,
+        stab=move.stab(attacker.type1, attacker.type2),
+        effectiveness=get_type_effectiveness(move.type, defender.type1, defender.type2),
+    )
+    print(
+        f"Expected {move.name} damage from {attacker.name} into {defender.name}: {min_damage}-{max_damage}"
+    )
+    print("Damage ranges: ")
+    offensive, bulky = get_percentage(defender.base_stats.hp, max_damage)
+    _, defensive = get_percentage(defender.base_stats.hp, min_damage)
+    print(f"Offensive: {offensive:.01f}%")
+    print(f"Bulky:  {bulky:.01f}%")
+    print(f"Defensive:  {defensive:.01f}%")
+
+
 if __name__ == "__main__":
+    from scrape_stats import get_base_stats, get_type
+    from datatypes import PokemonEvs
+
     # Jirachi base stats are all 100
     jirachi = Stat(hp=100, atk=100, defn=100, spatk=100, spdef=100, speed=100)
     weezing = Stat(hp=65, atk=90, defn=120, spatk=85, spdef=70, speed=60)
@@ -209,42 +244,7 @@ if __name__ == "__main__":
         type=Type.GROUND, category=MoveCategory.PHYSICAL, bp=75, name="Stomping Tantrum"
     )
 
-    from scrape_stats import get_base_stats, get_type
-    from datatypes import PokemonEvs
-
     archaludon_base = get_base_stats("Archaludon")
-
-    def get_pokemon(name: str, level: int = 50):
-        base_stats = get_base_stats(name)
-        type1, type2 = get_type(name)
-        return PokemonStats(base_stats, "Docile", level, type1, type2, name)
-
-    def calculate_expected_damages(
-        attacker: PokemonStats, move: Move, defender: PokemonStats
-    ):
-        print(
-            f"Effectiveness: {get_type_effectiveness(move.type, defender.type1, defender.type2)}"
-        )
-        min_damage, max_damage = get_damage_range(
-            attacker,
-            defender.base_stats,
-            defender_level=50,
-            move_bp=move.bp,
-            move_cat=move.category,
-            stab=move.stab(attacker.type1, attacker.type2),
-            effectiveness=get_type_effectiveness(
-                move.type, defender.type1, defender.type2
-            ),
-        )
-        print(
-            f"Expected {move.name} damage from {attacker.name} into {defender.name}: {min_damage}-{max_damage}"
-        )
-        print("Damage ranges: ")
-        offensive, bulky = get_percentage(defender.base_stats.hp, max_damage)
-        _, defensive = get_percentage(defender.base_stats.hp, min_damage)
-        print(f"Offensive: {offensive:.01f}%")
-        print(f"Bulky:  {bulky:.01f}%")
-        print(f"Defensive:  {defensive:.01f}%")
 
     calculate_expected_damages(garchomp, stomping_tantrum, get_pokemon("Archaludon"))
     calculate_expected_damages(
@@ -274,4 +274,30 @@ if __name__ == "__main__":
         aero,
         Move(type=Type.ROCK, category=MoveCategory.PHYSICAL, bp=50, name="Rock Slide"),
         ceruledge,
+    )
+
+    # Calculate mythical uninvested HP / Defense / Spdef
+    mythical_hp = calculate_hp(jirachi.hp, 0)
+    mythical_def = calculate_stat(jirachi.defn, 0)
+    print(f"Base mythical bulk: {mythical_hp}/{mythical_def}/{mythical_def}")
+
+    # Approximate "bulk" as defense * HP
+    mythical_bulk = mythical_hp * mythical_def
+
+    sash_aero = get_pokemon("Aerodactyl")
+    sash_aero_hp = calculate_hp(sash_aero.base_stats.hp, 2)
+    sash_aero_defn = calculate_stat(sash_aero.base_stats.defn, 0)
+    print(f"Sash aero defenses: {sash_aero_hp} / {sash_aero_defn}")
+    sash_aero_bulk = sash_aero_hp * sash_aero_defn
+    mega_aero = get_pokemon("Aerodactyl-Mega")
+    mega_aero_hp = calculate_hp(mega_aero.base_stats.hp, 252)
+    mega_aero_defn = calculate_stat(mega_aero.base_stats.defn, 0)
+    print(f"Mega aero defenses: {mega_aero_hp} / {mega_aero_defn}")
+    mega_aero_bulk = mega_aero_hp * mega_aero_defn
+
+    print(
+        f"Sash aero bulk as a % of Mythical: {sash_aero_bulk / mythical_bulk * 100:0.1f}%"
+    )
+    print(
+        f"Mega aero bulk as a % of Mythical: {mega_aero_bulk / mythical_bulk * 100:0.1f}%"
     )

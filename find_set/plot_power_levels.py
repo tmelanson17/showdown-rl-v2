@@ -14,8 +14,9 @@ special = df[df["category"] == "Special"].sort_values("avg_pct").reset_index(dro
 
 # rank -> (short label, hex color)
 physical_benchmarks = {
-    1297: ("Garchomp Max Earthquake", "#E8731C"),
-    1810: ("Sneasler Max Close Combat", "#2196F3"),
+    1414: ("Garchomp Max Dragon Claw", "#1D0EE4"),
+    1755: ("Sneasler Invested CC", "#E8731C"),
+    1810: ("Sneasler Max CC", "#2196F3"),
     1898: ("Basculegion Adap. Inv.\n2KO Last Respects", "#9C27B0"),
     1776: ("Kangaskhan Max Last Resort", "#4CAF50"),
 }
@@ -25,6 +26,12 @@ special_benchmarks = {
     1770: ("Charizard-MegaY Inv. Heat Wave", "#FF9800"),
     1892: ("Charizard-MegaY Inv.\nWeather Ball", "#F44336"),
     1909: ("Floette-Mega Inv.\nLight of Ruin", "#9C27B0"),
+}
+aero_defense_benchmark = {
+    31.3: ("Sash Aerodactyl 2HKO", "#E9A91E"),
+    62.7: ("Sash Aerodactyl Bulk", "#E9A91E"),
+    46.7: ("HP Invested Mega Aerodactyl 2HKO", "#1EE9CE"),
+    93.5: ("HP Invested Mega Aerodactyl Bulk", "#1EE9CE"),
 }
 
 
@@ -49,7 +56,20 @@ def spread_positions(values, min_gap=5.5):
     return result
 
 
-def make_chart(ax, data, benchmarks, title):
+def find_boundary_idx(values, key):
+    # Binary search for the largest value less than key
+    upper_idx = len(values)
+    lower_idx = 0
+    while upper_idx > lower_idx:
+        pivot = int((upper_idx + lower_idx) // 2)
+        if values[pivot] >= key:
+            upper_idx = pivot
+        else:
+            lower_idx = pivot + 1
+    return max(lower_idx - 1, 0)
+
+
+def make_chart(ax, data, benchmarks, title, defense_benchmarks=None):
     n = len(data)
     values = data["avg_pct"].values
     ranks = data["rank"].values
@@ -63,6 +83,12 @@ def make_chart(ax, data, benchmarks, title):
             idx = rank_to_idx[rank]
             colors[idx] = color
             bench_info.append((idx, float(values[idx]), label, color))
+
+    if defense_benchmarks is not None:
+        for value, (label, color) in defense_benchmarks.items():
+            idx = find_boundary_idx(values, value)
+            colors[idx] = color
+            bench_info.append((idx, value, label, color))
 
     ax.bar(np.arange(n), values, width=1.0, color=colors, linewidth=0, zorder=2)
 
@@ -137,7 +163,13 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(22, 8))
 fig.patch.set_facecolor("#FAFAFA")
 fig.suptitle("Pokémon Move Power Levels", fontsize=15, fontweight="bold")
 
-make_chart(ax1, physical, physical_benchmarks, "Physical Moves")
+make_chart(
+    ax1,
+    physical,
+    physical_benchmarks,
+    "Physical Moves",
+    defense_benchmarks=aero_defense_benchmark,
+)
 make_chart(ax2, special, special_benchmarks, "Special Moves")
 
 plt.tight_layout(rect=[0, 0, 1, 0.96])
