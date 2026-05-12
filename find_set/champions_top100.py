@@ -35,7 +35,7 @@ from urllib.error import HTTPError, URLError
 YEAR_MONTH = "2026-04"  # most recent complete month
 FORMAT_SLUG = "gen9championsvgc2026regma"
 CUTOFF = 1500
-TOP_N_POKEMON = 100
+TOP_N_POKEMON = 150
 TOP_N_MOVES = 10
 TOP_N_SPREADS = 5
 OUTPUT_CSV = "champions_top100_doubles_1500.csv"

@@ -8,18 +8,40 @@ Requires: pip install plotly numpy
 
 import numpy as np
 import plotly.graph_objects as go
+import pandas as pd
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# from adjust_damages import adjust_damage
 
 PORT = 8080
 
 
+def load_damages(damage_file):
+    df = pd.read_csv(damage_file)
+    damages = df["avg_damage"].to_numpy()
+    multipliers = df["multiplier"].to_numpy()
+    desc = df["desc"].to_numpy(dtype=str)
+    return damages, multipliers, desc
+
+
 def generate_plot() -> str:
     """Return a self-contained Plotly chart as an HTML div string."""
-    x = np.linspace(0, 2 * np.pi, 300)
+    y, _, desc = load_damages("../find_set/power_levels.csv")
+    x = np.arange(len(y))
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x, y=np.sin(x), mode="lines", name="sin(x)"))
-    fig.add_trace(go.Scatter(x=x, y=np.cos(x), mode="lines", name="cos(x)"))
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            name="Damages",
+            customdata=desc,
+            hovertemplate="%{customdata}<extra></extra>",
+        )
+    )
+    # fig.add_trace(go.Scatter(x=x, y=np.cos(x), mode="lines", name="cos(x)"))
     fig.update_layout(
         title="Does It Live?",
         xaxis_title="x",

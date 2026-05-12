@@ -5,10 +5,7 @@
  * Accepts a single JSON argument: { pokemon_name, moves, ability }
  * Prints a JSON result to stdout.
  *
- * For each damaging move, returns results for three investment modes:
- *   Uninvested: 0 EVs, Docile nature
- *   Invested:   252 EVs in offensive stat, Docile nature
- *   Max:        252 EVs in offensive stat + boosting nature (Adamant/Modest)
+ * For each damaging move and investment, returns the result.
  *
  * Ability-based weather/terrain is set on the Field automatically so that
  * abilities like Drought, Drizzle, Hadron Engine, Fairy Aura, etc. are
@@ -27,6 +24,7 @@ const gen = Generations.get(9);
 // Some Pokemon need a form suffix for the calculator to resolve their attacking stats.
 const CALC_NAME_MAP = {
   Aegislash: "Aegislash-Blade",
+  Palafin: "Palafin-Hero",
 };
 
 // Mew base HP at level 50, 0 EVs, 31 IVs:
@@ -105,23 +103,39 @@ function calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs,
   if (!move.bp || move.bp === 0) return null;
 
   const result = calculate(gen, attacker, defender, move, field);
+
   const damages = result.damage;
   if (!damages || damages.length === 0) return null;
 
-  // Multi-hit moves return an array of per-hit damage arrays.
-  // Single-hit moves return a flat array of damage rolls.
-  let avg;
-  if (Array.isArray(damages[0])) {
-    avg = damages.reduce((total, hitRolls) => {
-      return total + hitRolls.reduce((a, b) => a + b, 0) / hitRolls.length;
-    }, 0);
-  } else {
-    avg = damages.reduce((a, b) => a + b, 0) / damages.length;
+  function calcAvg(dmg) {
+    if (Array.isArray(dmg[0])) {
+      return dmg.reduce((total, hitRolls) => total + hitRolls.reduce((a, b) => a + b, 0) / hitRolls.length, 0);
+    }
+    return dmg.reduce((a, b) => a + b, 0) / dmg.length;
+  }
+
+  const avg = calcAvg(damages);
+
+  // Compute multiplier: ratio of actual damage to a typeless Struggle at the
+  // same effective BP (rawDesc.moveBP), same attacker and field.
+  // Struggle is typeless — no STAB, no weather type boost, no type effectiveness —
+  // so the ratio isolates all those combined modifiers.
+  let multiplier = null;
+  const effectiveBP = result.rawDesc.moveBP;
+  if (effectiveBP) {
+    const struggleMove = new Move(gen, "Struggle", { overrides: { basePower: effectiveBP } });
+    const baselineResult = calculate(gen, attacker, defender, struggleMove, field);
+    const baselineDamages = baselineResult.damage;
+    if (baselineDamages && baselineDamages.length > 0) {
+      const baselineAvg = calcAvg(baselineDamages);
+      if (baselineAvg > 0) multiplier = avg / baselineAvg;
+    }
   }
 
   return {
     avg_damage: avg,
     avg_pct: (avg / MEW_HP) * 100,
+    multiplier: multiplier,
     desc: result.desc(),
   };
 }

@@ -3,10 +3,7 @@ Estimate the offensive power of the top 100 VGC Pokemon by calculating the
 average damage each of their top moves deals against a neutral Mew
 (??? type, no EVs, Docile nature, level 50) using the Showdown calculator.
 
-For each (Pokemon, ability, move) triple, three investment modes are evaluated:
-  Uninvested – 0 EVs, neutral nature
-  Invested   – 252 EVs in the relevant offensive stat, neutral nature
-  Max        – 252 EVs in the relevant offensive stat + boosting nature
+For each (Pokemon, ability, move) triple, the top N investment modes are evaluated.
 
 Abilities come from the same Smogon usage stats that produced the move list,
 so only abilities that actually appeared in tournament play are tested.
@@ -334,6 +331,8 @@ def main() -> None:
                                 "move": move_key,
                                 "category": move_data["category"],
                                 "avg_pct": round(avg_pct, 2),
+                                "avg_damage": mode_result["avg_damage"],
+                                "multiplier": mode_result["multiplier"],
                                 "desc": mode_result["desc"],
                             },
                         )
@@ -347,6 +346,8 @@ def main() -> None:
     fieldnames = [
         "rank",
         "avg_pct",
+        "avg_damage",
+        "multiplier",
         "pokemon",
         "spread",
         "ability",
