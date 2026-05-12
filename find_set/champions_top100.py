@@ -37,6 +37,7 @@ FORMAT_SLUG = "gen9championsvgc2026regma"
 CUTOFF = 1500
 TOP_N_POKEMON = 100
 TOP_N_MOVES = 10
+TOP_N_SPREADS = 5
 OUTPUT_CSV = "champions_top100_doubles_1500.csv"
 OUTPUT_JSON = "champions_top100_doubles_1500.json"
 
@@ -219,6 +220,30 @@ def parse_usage_file(text: str):
     return out
 
 
+def parse_spread(spread_str: str) -> dict | None:
+    """
+    Parse a Smogon spread string like 'Modest:252/0/4/252/0/0' into a dict.
+    Returns None if the string doesn't match the expected format.
+    """
+    m = re.match(
+        r"([A-Za-z]+):([\d]+)/([\d]+)/([\d]+)/([\d]+)/([\d]+)/([\d]+)",
+        spread_str.strip(),
+    )
+    if not m:
+        return None
+    return {
+        "nature": m.group(1),
+        "evs": {
+            "hp": int(m.group(2)),
+            "atk": int(m.group(3)),
+            "def": int(m.group(4)),
+            "spa": int(m.group(5)),
+            "spd": int(m.group(6)),
+            "spe": int(m.group(7)),
+        },
+    }
+
+
 def main():
     print(
         f"Looking for Smogon stats: {YEAR_MONTH}, cutoff {CUTOFF}, format {FORMAT_SLUG}"
@@ -247,10 +272,20 @@ def main():
     records = []
     for name, info in top_100:
         entry = moveset_by_name.get(name)
-        moves = entry["sections"].get("Moves", []) if entry else []
+        sections = entry["sections"] if entry else {}
+
+        moves = sections.get("Moves", [])
         top_moves = [
             {"name": m_name, "usage_pct": pct} for m_name, pct in moves[:TOP_N_MOVES]
         ]
+
+        raw_spreads = sections.get("Spreads", [])
+        top_spreads = []
+        for spread_str, pct in raw_spreads[:TOP_N_SPREADS]:
+            parsed = parse_spread(spread_str)
+            if parsed:
+                top_spreads.append({**parsed, "usage_pct": pct})
+
         records.append(
             {
                 "rank": info["rank"],
@@ -258,6 +293,7 @@ def main():
                 "usage_pct": info["usage_pct"],
                 "raw_count": info["raw_count"],
                 "top_moves": top_moves,
+                "top_spreads": top_spreads,
             }
         )
 
@@ -266,6 +302,17 @@ def main():
     headers = ["rank", "pokemon", "usage_pct", "raw_count"]
     for i in range(1, TOP_N_MOVES + 1):
         headers += [f"move_{i}", f"move_{i}_pct"]
+    for i in range(1, TOP_N_SPREADS + 1):
+        headers += [
+            f"spread_{i}_nature",
+            f"spread_{i}_hp",
+            f"spread_{i}_atk",
+            f"spread_{i}_def",
+            f"spread_{i}_spa",
+            f"spread_{i}_spd",
+            f"spread_{i}_spe",
+            f"spread_{i}_pct",
+        ]
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -280,6 +327,22 @@ def main():
                     ]
                 else:
                     row += ["", ""]
+            for i in range(TOP_N_SPREADS):
+                if i < len(rec["top_spreads"]):
+                    s = rec["top_spreads"][i]
+                    ev = s["evs"]
+                    row += [
+                        s["nature"],
+                        ev["hp"],
+                        ev["atk"],
+                        ev["def"],
+                        ev["spa"],
+                        ev["spd"],
+                        ev["spe"],
+                        s["usage_pct"],
+                    ]
+                else:
+                    row += ["", "", "", "", "", "", "", ""]
             w.writerow(row)
 
     # ---- JSON output ----
@@ -295,6 +358,7 @@ def main():
             "usage_url": usage_url,
             "top_n_pokemon": TOP_N_POKEMON,
             "top_n_moves": TOP_N_MOVES,
+            "top_n_spreads": TOP_N_SPREADS,
         },
         "pokemon": records,
     }

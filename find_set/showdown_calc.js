@@ -63,6 +63,18 @@ const KO_SCALED_MOVES = {
   ],
 };
 
+function championsEvToSV(ev) {
+  return ev === 0 ? 0 : 4 + 8 * (ev - 1);
+}
+
+function convertSpreadEvs(evs) {
+  const out = {};
+  for (const stat of ["hp", "atk", "def", "spa", "spd", "spe"]) {
+    out[stat] = championsEvToSV(evs[stat] ?? 0);
+  }
+  return out;
+}
+
 function makeMew() {
   const mew = new Pokemon(gen, "Mew", { level: 50 });
   // Override to ??? type so all moves hit at neutral effectiveness.
@@ -163,14 +175,9 @@ function processInput(input) {
       continue;
     }
 
-    const isPhysical = category === "Physical";
-    const offensiveStat = isPhysical ? "atk" : "spa";
-    const boostingNature = isPhysical ? "Adamant" : "Modest";
-
+    const spread = input.spread;
     const modes = {
-      Uninvested: { evs: {}, nature: "Docile" },
-      Invested:   { evs: { [offensiveStat]: 252 }, nature: "Docile" },
-      Max:        { evs: { [offensiveStat]: 252 }, nature: boostingNature },
+      Spread: { evs: convertSpreadEvs(spread.evs), nature: spread.nature },
     };
 
     // Expand KO-scaled moves into multiple named variants.

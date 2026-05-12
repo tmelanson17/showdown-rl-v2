@@ -30,7 +30,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 INPUT_JSON = SCRIPT_DIR / "champions_top100_doubles_1500.json"
-INPUT_CSV  = SCRIPT_DIR / "champions_top100_doubles_1500.csv"
+INPUT_CSV = SCRIPT_DIR / "champions_top100_doubles_1500.csv"
 OUTPUT_CSV = SCRIPT_DIR / "power_levels.csv"
 CALC_SCRIPT = SCRIPT_DIR / "showdown_calc.js"
 ABILITIES_CACHE = SCRIPT_DIR / "abilities_cache.json"
@@ -67,8 +67,11 @@ EXTRA_FIELD_CONTEXTS: dict[str, list[dict[str, str]]] = {
 # Ability data from Smogon moveset stats
 # ---------------------------------------------------------------------------
 
+
 def _fetch_moveset_text(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "offensive-power-estimator/1.0"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "offensive-power-estimator/1.0"}
+    )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -81,8 +84,14 @@ def _parse_abilities(text: str) -> dict[str, list[str]]:
     its first content line.
     """
     SECTION_HEADERS = {
-        "Abilities", "Items", "Moves", "Spreads", "Teammates",
-        "Checks and Counters", "Tera Types", "Happiness",
+        "Abilities",
+        "Items",
+        "Moves",
+        "Spreads",
+        "Teammates",
+        "Checks and Counters",
+        "Tera Types",
+        "Happiness",
     }
 
     # Split file into blocks (content between +---+ delimiters).
@@ -155,6 +164,7 @@ def fetch_top_abilities() -> dict[str, list[str]]:
 # Damage calculation via Node.js wrapper
 # ---------------------------------------------------------------------------
 
+
 def _read_csv() -> list[dict]:
     with open(INPUT_CSV, newline="", encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
@@ -169,18 +179,42 @@ def _extract_moves(row: dict) -> list[str]:
     return moves
 
 
+def _extract_spreads(row: dict) -> list[dict]:
+    spreads = []
+    for i in range(1, 6):
+        nature = row.get(f"spread_{i}_nature", "").strip()
+        if not nature:
+            break
+        try:
+            evs = {
+                "hp": int(row[f"spread_{i}_hp"] or 0),
+                "atk": int(row[f"spread_{i}_atk"] or 0),
+                "def": int(row[f"spread_{i}_def"] or 0),
+                "spa": int(row[f"spread_{i}_spa"] or 0),
+                "spd": int(row[f"spread_{i}_spd"] or 0),
+                "spe": int(row[f"spread_{i}_spe"] or 0),
+            }
+        except (KeyError, ValueError):
+            break
+        spreads.append({"nature": nature, "evs": evs})
+    return spreads
+
+
 def _call_calc(
     pokemon_name: str,
     moves: list[str],
     ability: str,
     weather: str = "",
     terrain: str = "",
+    spread: dict | None = None,
 ) -> dict:
     payload: dict = {"pokemon_name": pokemon_name, "moves": moves, "ability": ability}
     if weather:
         payload["weather"] = weather
     if terrain:
         payload["terrain"] = terrain
+    if spread:
+        payload["spread"] = spread
 
     result = subprocess.run(
         ["node", str(CALC_SCRIPT), json.dumps(payload)],
@@ -205,6 +239,7 @@ def _call_calc(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     rows = _read_csv()
     print(f"Loaded {len(rows)} Pokemon from {INPUT_CSV.name}")
@@ -216,6 +251,7 @@ def main() -> None:
     for row in rows:
         pokemon_name = row["pokemon"]
         moves = _extract_moves(row)
+        spreads = _extract_spreads(row)
         if not moves:
             continue
 
@@ -224,72 +260,102 @@ def main() -> None:
             # Fall back to calc species default when stats have no ability data.
             abilities = [None]
 
-        print(f"  {pokemon_name} ({len(abilities)} abilities, {len(moves)} moves)…",
-              end=" ", flush=True)
+        print(
+            f"  {pokemon_name} ({len(abilities)} abilities, {len(moves)} moves, {len(spreads)} spreads)…",
+            end=" ",
+            flush=True,
+        )
         count = 0
 
         # Build the list of (ability, weather_override, terrain_override) contexts
         # to test.  Start with each usage-stat ability at its natural conditions,
         # then append any extra field contexts defined in EXTRA_FIELD_CONTEXTS.
-        contexts: list[tuple[str, str, str]] = [
-            (ab or "", "", "") for ab in abilities
-        ]
+        contexts: list[tuple[str, str, str]] = [(ab or "", "", "") for ab in abilities]
         for extra in EXTRA_FIELD_CONTEXTS.get(pokemon_name, []):
             for ab in abilities:
-                contexts.append((ab or "", extra.get("weather", ""), extra.get("terrain", "")))
+                contexts.append(
+                    (ab or "", extra.get("weather", ""), extra.get("terrain", ""))
+                )
 
-        seen_contexts: set[tuple[str, str, str]] = set()
-        seen_calcs: set[tuple[str, str, str]] = set()   # (move_key, mode, desc)
-        for ability, weather_override, terrain_override in contexts:
-            key = (ability, weather_override, terrain_override)
-            if key in seen_contexts:
-                continue
-            seen_contexts.add(key)
-
-            calc_results = _call_calc(
-                pokemon_name, moves, ability,
-                weather=weather_override, terrain=terrain_override,
+        seen_calcs: set[tuple[str, str, str, str]] = (
+            set()
+        )  # (spread_label, move_key, ability, desc)
+        for spread in spreads:
+            spread_label = (
+                f"{spread['nature']}:"
+                f"{spread['evs']['hp']}/{spread['evs']['atk']}/{spread['evs']['def']}/"
+                f"{spread['evs']['spa']}/{spread['evs']['spd']}/{spread['evs']['spe']}"
             )
-
-            # Determine the effective weather to show in the CSV.
-            if weather_override:
-                effective_weather = weather_override
-            else:
-                effective_weather = ABILITY_TO_WEATHER.get(ability, "")
-            effective_terrain = terrain_override or ABILITY_TO_TERRAIN.get(ability, "")
-
-            for move_key, move_data in calc_results.items():
-                if move_data is None:
+            seen_contexts: set[tuple[str, str, str]] = set()
+            for ability, weather_override, terrain_override in contexts:
+                key = (ability, weather_override, terrain_override)
+                if key in seen_contexts:
                     continue
-                for mode_name, mode_result in move_data["modes"].items():
+                seen_contexts.add(key)
+
+                calc_results = _call_calc(
+                    pokemon_name,
+                    moves,
+                    ability,
+                    weather=weather_override,
+                    terrain=terrain_override,
+                    spread=spread,
+                )
+
+                # Determine the effective weather to show in the CSV.
+                if weather_override:
+                    effective_weather = weather_override
+                else:
+                    effective_weather = ABILITY_TO_WEATHER.get(ability, "")
+                effective_terrain = terrain_override or ABILITY_TO_TERRAIN.get(
+                    ability, ""
+                )
+
+                for move_key, move_data in calc_results.items():
+                    if move_data is None:
+                        continue
+                    mode_result = move_data["modes"].get("Spread")
                     if mode_result is None:
                         continue
-                    calc_key = (move_key, mode_name, mode_result["desc"])
+                    calc_key = mode_result["desc"]
                     if calc_key in seen_calcs:
                         continue
                     seen_calcs.add(calc_key)
                     avg_pct = mode_result["avg_pct"]
-                    power_set.append((
-                        avg_pct,
-                        {
-                            "pokemon":   pokemon_name,
-                            "ability":   ability,
-                            "weather":   effective_weather,
-                            "terrain":   effective_terrain,
-                            "mode":      mode_name,
-                            "move":      move_key,
-                            "category":  move_data["category"],
-                            "avg_pct":   round(avg_pct, 2),
-                            "desc":      mode_result["desc"],
-                        },
-                    ))
+                    power_set.append(
+                        (
+                            avg_pct,
+                            {
+                                "pokemon": pokemon_name,
+                                "spread": spread_label,
+                                "ability": ability,
+                                "weather": effective_weather,
+                                "terrain": effective_terrain,
+                                "move": move_key,
+                                "category": move_data["category"],
+                                "avg_pct": round(avg_pct, 2),
+                                "desc": mode_result["desc"],
+                            },
+                        )
+                    )
                     count += 1
 
         print(f"{count} entries")
 
     power_set.sort(key=lambda x: x[0])
 
-    fieldnames = ["rank", "avg_pct", "pokemon", "ability", "weather", "terrain", "mode", "move", "category", "desc"]
+    fieldnames = [
+        "rank",
+        "avg_pct",
+        "pokemon",
+        "spread",
+        "ability",
+        "weather",
+        "terrain",
+        "move",
+        "category",
+        "desc",
+    ]
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()

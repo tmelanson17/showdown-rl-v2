@@ -14,18 +14,18 @@ special = df[df["category"] == "Special"].sort_values("avg_pct").reset_index(dro
 
 # rank -> (short label, hex color)
 physical_benchmarks = {
-    1414: ("Garchomp Max Dragon Claw", "#1D0EE4"),
-    1755: ("Sneasler Invested CC", "#E8731C"),
-    1810: ("Sneasler Max CC", "#2196F3"),
-    1898: ("Basculegion Adap. Inv.\n2KO Last Respects", "#9C27B0"),
-    1776: ("Kangaskhan Max Last Resort", "#4CAF50"),
+    1031: ("Garchomp Max Dragon Claw", "#1D0EE4"),
+    1324: ("Sneasler Invested CC", "#E8731C"),
+    1365: ("Sneasler Max CC", "#2196F3"),
+    1377: ("Basculegion Adap. Inv.\n2KO Last Respects", "#9C27B0"),
+    1341: ("Kangaskhan Max Last Resort", "#4CAF50"),
 }
 special_benchmarks = {
-    1244: ("Sylveon Max Hyper Voice", "#E91E63"),
-    1830: ("Archaludon Max Electro Shot", "#2196F3"),
-    1770: ("Charizard-MegaY Inv. Heat Wave", "#FF9800"),
-    1892: ("Charizard-MegaY Inv.\nWeather Ball", "#F44336"),
-    1909: ("Floette-Mega Inv.\nLight of Ruin", "#9C27B0"),
+    1244: ("Sylveon 252+ SpA Hyper Voice", "#E91E63"),
+    1830: ("Archaludon 252+ SpA Electro Shot", "#2196F3"),
+    1770: ("Charizard MegaY 252+ Heat Wave", "#FF9800"),
+    1892: ("Charizard MegaY 252+\nWeather Ball", "#F44336"),
+    1909: ("Floette 252 SpA\nLight of Ruin", "#9C27B0"),
 }
 aero_defense_benchmark = {
     31.3: ("Sash Aerodactyl 2HKO", "#E9A91E"),
