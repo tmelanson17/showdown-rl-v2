@@ -9,7 +9,6 @@ from find_set.datatypes import Type
 
 def _get_adjusted_damage(total_damage, multiplier, effectiveness, defense):
     base_damage = total_damage / multiplier - 2
-    print(base_damage[-10:])
     return MYTHICAL_DEFENSE / defense * base_damage * effectiveness + 2
 
 
