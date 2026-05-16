@@ -81,7 +81,68 @@ function makeMew() {
   return mew;
 }
 
-function calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs, nature) {
+function calcAvg(dmg) {
+  if (Array.isArray(dmg[0])) {
+    return dmg.reduce((total, hitRolls) => total + hitRolls.reduce((a, b) => a + b, 0) / hitRolls.length, 0);
+  }
+  return dmg.reduce((a, b) => a + b, 0) / dmg.length;
+}
+
+function divide(dmg_divisor, dmg_dividend) {
+  if (Array.isArray(dmg_divisor[0])) {
+    return dmg_divisor.map((arr, i) => arr.map((val, j) => val / dmg_dividend[i][j]));
+  }
+  return dmg_divisor.map((val, i) => val / dmg_dividend[i]);
+}
+
+const SNAP_VALUES = [1, 1.5, 2.0, 2.25, 3.0, 1.5 ** 3, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0];
+
+function snapMultiplier(x) {
+  return SNAP_VALUES.reduce((a, b) => Math.abs(b - x) < Math.abs(a - x) ? b : a);
+}
+
+
+function calcMultiplier(damages, moveBP, move, attacker, defender) {
+  // Compute multiplier: ratio of actual damage to a baseline that strips all
+  // type-based modifiers. The baseline uses the same move at effectiveBP but
+  // with a ???-typed attack on an empty field — eliminating STAB, weather
+  // type boosts, and terrain boosts. Type effectiveness is already neutral
+  // because the defender is ???-typed.
+
+  // rawDesc.moveBP is only set when BP differs from the move's default (e.g. Weather Ball in Sun).
+  // Fall back to move.bp for standard moves.
+  const effectiveBP = moveBP ?? move.bp;
+  // It seems like there's an edge case where a typeless move is used against a typeless opponent. 
+  // So we will create a typeless attacker (with the same ability to account for ex. Huge Power).
+  const baselineAttacker = new Pokemon(gen, attacker.name, {level: 50, ability: attacker.ability, types: ["???"], evs: attacker.evs, nature: attacker.nature});
+  baselineAttacker.species.types = ["???", null];
+  baselineAttacker.types = ["???", null];
+  const baselineMove = new Move(gen, move.name, {overrides: {basePower: effectiveBP}});
+  
+  const baselineResult = calculate(gen, baselineAttacker, defender, baselineMove, new Field({ gameType: "Doubles" }));
+  const baselineDamages = baselineResult.damage;
+  // console.log("Received damage: ", calcAvg(damages))
+  // console.log("Baseline damages: ", calcAvg(baselineDamages))
+  if (baselineDamages && baselineDamages.length === damages.length) {
+    // Use the max roll, as that is 1.0
+    return snapMultiplier(damages[damages.length-1] / baselineDamages[baselineDamages.length-1]);
+  }
+  // console.log("Error: Invalid base damage calculation.");
+  return -1;
+}
+
+function buildCalcInputs(pokemonName, ability, fieldOpts, bpOverride = null, evs = {}, nature = "Docile") {
+  return {
+    calcName: CALC_NAME_MAP[pokemonName] || pokemonName,
+    ability,
+    fieldOpts,
+    bpOverride,
+    evs,
+    nature,
+  };
+}
+
+function _calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs, nature) {
   const attacker = new Pokemon(gen, calcName, {
     level: 50,
     evs,
@@ -107,37 +168,19 @@ function calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs,
   const damages = result.damage;
   if (!damages || damages.length === 0) return null;
 
-  function calcAvg(dmg) {
-    if (Array.isArray(dmg[0])) {
-      return dmg.reduce((total, hitRolls) => total + hitRolls.reduce((a, b) => a + b, 0) / hitRolls.length, 0);
-    }
-    return dmg.reduce((a, b) => a + b, 0) / dmg.length;
-  }
-
   const avg = calcAvg(damages);
-
-  // Compute multiplier: ratio of actual damage to a typeless Struggle at the
-  // same effective BP (rawDesc.moveBP), same attacker and field.
-  // Struggle is typeless — no STAB, no weather type boost, no type effectiveness —
-  // so the ratio isolates all those combined modifiers.
-  let multiplier = null;
-  const effectiveBP = result.rawDesc.moveBP;
-  if (effectiveBP) {
-    const struggleMove = new Move(gen, "Struggle", { overrides: { basePower: effectiveBP } });
-    const baselineResult = calculate(gen, attacker, defender, struggleMove, field);
-    const baselineDamages = baselineResult.damage;
-    if (baselineDamages && baselineDamages.length > 0) {
-      const baselineAvg = calcAvg(baselineDamages);
-      if (baselineAvg > 0) multiplier = avg / baselineAvg;
-    }
-  }
 
   return {
     avg_damage: avg,
     avg_pct: (avg / MEW_HP) * 100,
-    multiplier: multiplier,
+    multiplier: calcMultiplier(result.damage, result.rawDesc.moveBP, move, attacker, defender),
     desc: result.desc(),
   };
+}
+
+function calcSingleMode(pokemonName, moveName, ability, fieldOpts, bpOverride = null, evs = {}, nature = "Docile") {
+  const inputs = buildCalcInputs(pokemonName, ability, fieldOpts, bpOverride, evs, nature);
+  return _calcSingleMode(inputs.calcName, moveName, inputs.bpOverride, inputs.ability, inputs.fieldOpts, inputs.evs, inputs.nature);
 }
 
 function getMoveCategory(moveName) {
@@ -202,7 +245,7 @@ function processInput(input) {
       const modeResults = {};
 
       for (const [modeName, config] of Object.entries(modes)) {
-        modeResults[modeName] = calcSingleMode(
+        modeResults[modeName] = _calcSingleMode(
           calcName,
           moveName,
           variant.basePower,
@@ -224,5 +267,9 @@ function processInput(input) {
   return results;
 }
 
-const input = JSON.parse(process.argv[2]);
-console.log(JSON.stringify(processInput(input)));
+module.exports = { processInput, calcSingleMode, calcMultiplier, buildCalcInputs };
+
+if (require.main === module) {
+  const input = JSON.parse(process.argv[2]);
+  console.log(JSON.stringify(processInput(input)));
+}
