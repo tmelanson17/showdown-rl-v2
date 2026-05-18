@@ -1,5 +1,5 @@
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -81,3 +81,15 @@ class Move:
             if self.type == type1 or (type2 is not None and self.type == type2)
             else 1.0
         )
+
+
+@dataclass
+class PokemonStats:
+    base_stats: Stat
+    nature: str
+    level: int
+    type1: Type
+    type2: Optional[Type]
+    name: str
+    evs: Optional[PokemonEvs] = None
+    ivs: Ivs = field(default_factory=Ivs.all_max)

@@ -175,6 +175,7 @@ function _calcSingleMode(calcName, moveName, bpOverride, ability, fieldOpts, evs
     avg_pct: (avg / MEW_HP) * 100,
     multiplier: calcMultiplier(result.damage, result.rawDesc.moveBP, move, attacker, defender),
     desc: result.desc(),
+    type: result.move.type
   };
 }
 

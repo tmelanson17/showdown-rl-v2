@@ -1,10 +1,9 @@
 import math
-from dataclasses import dataclass, field
 from typing import Optional
 
-from datatypes import Stat, Ivs, PokemonEvs, MoveCategory, Move, Type
-from nature import BOOSTING, NEUTRAL, get_boost
-from type_chart import get_type_effectiveness
+from find_set.datatypes import Stat, Ivs, PokemonEvs, MoveCategory, Move, Type, PokemonStats
+from find_set.nature import BOOSTING, NEUTRAL, get_boost
+from find_set.type_chart import get_type_effectiveness
 
 MIN_DAMAGE_ROLL = 0.85
 MAX_DAMAGE_ROLL = 1.0
@@ -90,18 +89,6 @@ def find_attack_range(
         attack = power_ratio * defense / bp
         attack_range[i] = attack
     return (attack_range[0], attack_range[1])
-
-
-@dataclass
-class PokemonStats:
-    base_stats: Stat
-    nature: str
-    level: int
-    type1: Type
-    type2: Optional[Type]
-    name: str
-    evs: Optional[PokemonEvs] = None
-    ivs: Ivs = field(default_factory=Ivs.all_max)
 
 
 # Get approximate values for an attack into an opponent with various levels of bulk

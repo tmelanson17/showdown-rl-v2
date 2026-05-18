@@ -334,6 +334,7 @@ def main() -> None:
                                 "avg_damage": mode_result["avg_damage"],
                                 "multiplier": mode_result["multiplier"],
                                 "desc": mode_result["desc"],
+                                "type": mode_result["type"],
                             },
                         )
                     )
@@ -356,6 +357,7 @@ def main() -> None:
         "move",
         "category",
         "desc",
+        "type",
     ]
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)

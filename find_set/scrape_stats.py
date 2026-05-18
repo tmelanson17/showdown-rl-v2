@@ -12,8 +12,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 
-sys.path.insert(0, os.path.dirname(__file__))
-from datatypes import Stat, Type
+from find_set.datatypes import Stat, Type
 
 _BASE_URL = "https://pokemondb.net/pokedex"
 
@@ -104,7 +103,11 @@ def _types_from_panel(panel) -> tuple[Type, Type | None]:
             if th and th.get_text(strip=True) == "Type":
                 icons = row.select("a.type-icon")
                 t1 = Type[icons[0].get_text(strip=True).upper()]
-                t2 = Type[icons[1].get_text(strip=True).upper()] if len(icons) > 1 else None
+                t2 = (
+                    Type[icons[1].get_text(strip=True).upper()]
+                    if len(icons) > 1
+                    else None
+                )
                 return t1, t2
     raise ValueError("Type row not found in panel")
 

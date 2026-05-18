@@ -14,10 +14,15 @@ import pandas as pd
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from doesitlive.adjust_damages import adjust_damage, Type
+from doesitlive.adjust_damages import adjust_damage
+
+# NOTE: scrape_stats depends on the requests + bs4 library
+from find_set.scrape_stats import get_base_stats, get_type
+from find_set.datatypes import PokemonStats
 
 PORT = 8080
 _DAMAGE_DATA: dict | None = None
+BASE_POKEMON: PokemonStats | None = None
 
 
 def _get_damage_data() -> dict:
@@ -37,6 +42,7 @@ def load_damages(damage_file):
     multipliers = df["multiplier"].to_numpy()
     desc = df["desc"].to_numpy(dtype=str)
     category = df["category"].to_numpy(dtype=str)
+    types = df["type"].to_numpy(dtype=str)
     physical_idx = category == "Physical"
     special_idx = category == "Special"
 
@@ -45,26 +51,51 @@ def load_damages(damage_file):
             damages[physical_idx],
             multipliers[physical_idx],
             desc[physical_idx],
+            types[physical_idx].tolist(),
         ),
-        "Special": (damages[special_idx], multipliers[special_idx], desc[special_idx]),
+        "Special": (
+            damages[special_idx],
+            multipliers[special_idx],
+            desc[special_idx],
+            types[special_idx].tolist(),
+        ),
     }
 
 
-def get_adjusted_damage(damages, multipliers, desc, defense):
+def get_adjusted_damage(damages, multipliers, desc, move_type, defense, type1, type2):
     adjusted_damage = adjust_damage(
-        damages, multipliers, defense, Type.NORMAL, Type.NORMAL, None
+        damages, multipliers, defense, move_type, type1, type2
     )
-    adjusted_damage.sort()
+    sorted_indices = adjusted_damage.argsort()
     x = np.arange(len(adjusted_damage)).tolist()
-    return {"x": x, "y": adjusted_damage.tolist(), "desc": desc.tolist()}
+    return {
+        "x": x,
+        "y": adjusted_damage[sorted_indices].tolist(),
+        "desc": desc[sorted_indices].tolist(),
+    }
 
 
-def generate_plot(hp: int = 175) -> str:
+def generate_plot() -> str:
     """Return a self-contained Plotly chart as an HTML div string."""
+    global BASE_POKEMON
+    assert BASE_POKEMON is not None
     data = load_damages("find_set/power_levels.csv")
     fig = go.Figure()
-    for category in ("Physical", "Special"):
-        damage_adj = get_adjusted_damage(*data[category], defense=1.0)
+
+    def create_custom_label(desc: str):
+        return desc[: desc.find("vs.")]
+
+    for dfn, category in zip(
+        (BASE_POKEMON.base_stats.defn, BASE_POKEMON.base_stats.spdef),
+        ("Physical", "Special"),
+    ):
+        damage_adj = get_adjusted_damage(
+            *data[category],
+            defense=dfn,
+            type1=BASE_POKEMON.type1,
+            type2=BASE_POKEMON.type2,
+        )
+        custom_labels = [create_custom_label(desc) for desc in damage_adj["desc"]]
 
         fig.add_trace(
             go.Scatter(
@@ -72,15 +103,17 @@ def generate_plot(hp: int = 175) -> str:
                 y=damage_adj["y"],
                 mode="markers",
                 name=f"{category} Damage",
-                customdata=damage_adj["desc"],
+                customdata=custom_labels,
                 hovertemplate="%{customdata}<extra></extra>",
             )
         )
     fig.add_hline(
-        y=hp, line_dash="dot", label=dict(text="OHKO", textposition="top left")
+        y=BASE_POKEMON.base_stats.hp,
+        line_dash="dot",
+        label=dict(text="OHKO", textposition="top left"),
     )
     fig.add_hline(
-        y=twohitko(hp),
+        y=twohitko(BASE_POKEMON.base_stats.hp),
         line_dash="dot",
         label=dict(text="2HKO", textposition="top left"),
     )
@@ -209,18 +242,48 @@ def build_page() -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def update_base_stats(self, pokemon_name: str):
+        global BASE_POKEMON
+        if BASE_POKEMON is not None and BASE_POKEMON.name == pokemon_name:
+            return
+        stats = get_base_stats(pokemon_name)
+        type1, type2 = get_type(pokemon_name)
+        # TODO: Level needs to be not hard-coded (ok since this is Champions)
+        BASE_POKEMON = PokemonStats(
+            stats,
+            nature="Docile",
+            level=50,
+            type1=type1,
+            type2=type2,
+            name=pokemon_name,
+        )
+
     def do_GET(self):
+        self.update_base_stats("Garchomp")
         if self.path in ("/", "/index.html"):
             body = build_page()
             self._respond(200, "text/html; charset=utf-8", body)
         elif self.path.startswith("/data"):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            defense = float(qs.get("defense", ["1.0"])[0])
-            spdef = float(qs.get("spdef", ["1.0"])[0])
-            hp = float(qs.get("hp", ["1.0"])[0])
+            global BASE_POKEMON
+            assert BASE_POKEMON is not None
+            # defense = float(qs.get("defense", ["1.0"])[0])
+            # spdef = float(qs.get("spdef", ["1.0"])[0])
+            # hp = float(qs.get("hp", ["1.0"])[0])
+            hp = BASE_POKEMON.base_stats.hp
             data = _get_damage_data()
-            result_physical = get_adjusted_damage(*data["Physical"], defense=defense)
-            result_special = get_adjusted_damage(*data["Special"], defense=spdef)
+            result_physical = get_adjusted_damage(
+                *data["Physical"],
+                defense=BASE_POKEMON.base_stats.defn,
+                type1=BASE_POKEMON.type1,
+                type2=BASE_POKEMON.type2,
+            )
+            result_special = get_adjusted_damage(
+                *data["Special"],
+                defense=BASE_POKEMON.base_stats.spdef,
+                type1=BASE_POKEMON.type1,
+                type2=BASE_POKEMON.type2,
+            )
             result = {"Physical": result_physical, "Special": result_special, "HP": hp}
             body = orjson.dumps(result)
             self._respond(200, "application/json", body)

@@ -1,7 +1,4 @@
-try:
-    from datatypes import Type
-except ImportError:
-    from find_set.datatypes import Type
+from find_set.datatypes import Type
 
 # Effectiveness multipliers: TYPE_CHART[attacking][defending] -> multiplier
 # 0 = immune, 0.5 = not very effective, 1 = neutral, 2 = super effective
@@ -164,13 +161,18 @@ TYPE_CHART: dict[Type, dict[Type, float]] = {
 }
 
 
+def get_type(tp: Type | str) -> Type:
+    return Type(tp) if not isinstance(tp, str) else Type[tp.upper()]
+
+
 def get_type_effectiveness(
-    move_type: Type,
+    move_type: Type | str,
     defending_type1: Type,
     defending_type2: Type | None = None,
 ) -> float:
-    chart = TYPE_CHART.get(move_type, {})
-    multiplier = chart.get(defending_type1, 1.0)
+    chart = TYPE_CHART.get(get_type(move_type))
+    assert chart is not None, "Type not found in chart!"
+    multiplier = chart.get(get_type(defending_type1), 1.0)
     if defending_type2 is not None:
-        multiplier *= chart.get(defending_type2, 1.0)
+        multiplier *= chart.get(get_type(defending_type2), 1.0)
     return multiplier

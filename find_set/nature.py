@@ -1,5 +1,5 @@
 from typing import Optional
-from datatypes import MoveCategory
+from find_set.datatypes import MoveCategory
 
 Nature = dict[str, float]
 

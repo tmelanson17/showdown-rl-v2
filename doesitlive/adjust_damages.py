@@ -9,20 +9,24 @@ from find_set.datatypes import Type
 
 def _get_adjusted_damage(total_damage, multiplier, effectiveness, defense):
     base_damage = total_damage / multiplier - 2
-    return MYTHICAL_DEFENSE / defense * base_damage * effectiveness + 2
+    return (MYTHICAL_DEFENSE / defense * base_damage + 2) * effectiveness * multiplier
 
 
 def adjust_damage(
     total_damage: np.ndarray,
     multiplier: np.ndarray,
     defense: float,
-    move_type1: Type,
+    move_type: list[Type],
     defender_type1: Type,
-    defender_type2: Optional[Type],
+    defender_type2: Type | None,
 ):
+    effectiveness = [
+        get_type_effectiveness(mt, defender_type1, defender_type2) for mt in move_type
+    ]
+
     return _get_adjusted_damage(
         total_damage,
         multiplier,
-        get_type_effectiveness(move_type1, defender_type1, defender_type2),
+        np.array(effectiveness),
         defense,
     )
