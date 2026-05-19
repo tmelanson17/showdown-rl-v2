@@ -18,11 +18,36 @@ from doesitlive.adjust_damages import adjust_damage
 
 # NOTE: scrape_stats depends on the requests + bs4 library
 from find_set.scrape_stats import get_base_stats, get_type
-from find_set.datatypes import PokemonStats
+from find_set.datatypes import PokemonStats, PokemonEvs
 
 PORT = 8080
 _DAMAGE_DATA: dict | None = None
 BASE_POKEMON: PokemonStats | None = None
+
+#########################
+### STAT HELPER CALCS (TODO: Move to separate file)
+###########################
+import math
+
+
+# Use Champions EV base (0-32)
+def stat_helper_calc(base: int, ev: int, iv: int = 31, level: int = 50):
+    return math.floor(((2 * base + iv + ev) * level) / 100)
+
+
+# Calculate the base stat based on EV's
+def calculate_hp(base: int, ev: int, iv: int = 31, level: int = 50):
+    return stat_helper_calc(base, ev, iv, level) + level + 10
+
+
+def calculate_stat(
+    base: int,
+    ev: int,
+    iv: int = 31,
+    level: int = 50,
+    nature_multiplier: float = 1.0,
+):
+    return math.floor((stat_helper_calc(base, ev, iv, level) + 5) * nature_multiplier)
 
 
 def _get_damage_data() -> dict:
@@ -40,11 +65,15 @@ def load_damages(damage_file):
     df = pd.read_csv(damage_file)
     damages = df["avg_damage"].to_numpy()
     multipliers = df["multiplier"].to_numpy()
-    desc = df["desc"].to_numpy(dtype=str)
     category = df["category"].to_numpy(dtype=str)
     types = df["type"].to_numpy(dtype=str)
     physical_idx = category == "Physical"
     special_idx = category == "Special"
+
+    def create_custom_label(desc_str: str):
+        return desc_str[: desc_str.find("vs.")]
+
+    desc = df["desc"].apply(create_custom_label).to_numpy(dtype=str)
 
     return {
         "Physical": (
@@ -82,9 +111,6 @@ def generate_plot() -> str:
     data = load_damages("find_set/power_levels.csv")
     fig = go.Figure()
 
-    def create_custom_label(desc: str):
-        return desc[: desc.find("vs.")]
-
     for dfn, category in zip(
         (BASE_POKEMON.base_stats.defn, BASE_POKEMON.base_stats.spdef),
         ("Physical", "Special"),
@@ -95,7 +121,6 @@ def generate_plot() -> str:
             type1=BASE_POKEMON.type1,
             type2=BASE_POKEMON.type2,
         )
-        custom_labels = [create_custom_label(desc) for desc in damage_adj["desc"]]
 
         fig.add_trace(
             go.Scatter(
@@ -103,7 +128,7 @@ def generate_plot() -> str:
                 y=damage_adj["y"],
                 mode="markers",
                 name=f"{category} Damage",
-                customdata=custom_labels,
+                customdata=damage_adj["desc"],
                 hovertemplate="%{customdata}<extra></extra>",
             )
         )
@@ -173,18 +198,18 @@ def build_page() -> bytes:
   </div>
   <div class="slider-wrap">
     <label for="hp-slider">HP</label>
-    <input id="hp-slider" type="range" min="1" max="400" step="1" value="300">
-    <span id="hp-label">300</span>
+    <input id="hp-slider" type="range" min="0" max="32" step="1" value="0">
+    <span id="hp-label">0</span>
   </div>
   <div class="slider-wrap">
     <label for="defense-slider">Defense</label>
-    <input id="defense-slider" type="range" min="1" max="300" step="1" value="120">
-    <span id="defense-label">120</span>
+    <input id="defense-slider" type="range" min="0" max="32" step="1" value="0">
+    <span id="defense-label">0</span>
   </div>
   <div class="slider-wrap">
     <label for="spdef-slider">Sp. Defense</label>
-    <input id="spdef-slider" type="range" min="1" max="300" step="1" value="120">
-    <span id="spdef-label">120</span>
+    <input id="spdef-slider" type="range" min="0" max="32" step="1" value="0">
+    <span id="spdef-label">0</span>
   </div>
 
   <script>
@@ -200,9 +225,9 @@ def build_page() -> bytes:
     let pending = null;
 
     function fetchData() {{
-      const defense = parseFloat(defenseSlider.value);
-      const hp      = parseFloat(hpSlider.value);
-      const spdef   = parseFloat(spdefSlider.value);
+      const defense = parseInt(defenseSlider.value);
+      const hp      = parseInt(hpSlider.value);
+      const spdef   = parseInt(spdefSlider.value);
 
       // Debounce: cancel any in-flight request before firing a new one
       if (pending) {{ pending.abort(); }}
@@ -218,21 +243,17 @@ def build_page() -> bytes:
             {{ ...plotDiv.data[0], x: data.Physical.x, y: data.Physical.y, customdata: data.Physical.desc }},
             {{ ...plotDiv.data[1], x: data.Special.x,  y: data.Special.y,  customdata: data.Special.desc  }},
           ], plotDiv.layout);
+          Plotly.relayout(plotDiv, {{
+            'shapes[0].y0': data.HP,           'shapes[0].y1': data.HP,
+            'shapes[1].y0': Math.floor(data.HP / 2) + 1, 'shapes[1].y1': Math.floor(data.HP / 2) + 1,
+          }});
 
         }})
         .catch(() => {{}});  // AbortError from cancelled requests is expected
     }}
 
-    function updateHlines() {{
-      const hp = parseFloat(hpSlider.value);
-      Plotly.relayout(plotDiv, {{
-        'shapes[0].y0': hp,           'shapes[0].y1': hp,
-        'shapes[1].y0': Math.floor(hp / 2) + 1, 'shapes[1].y1': Math.floor(hp / 2) + 1,
-      }});
-    }}
-
     defenseSlider.addEventListener('input', () => {{ defenseLabel.textContent = defenseSlider.value; fetchData(); }});
-    hpSlider.addEventListener('input',      () => {{ hpLabel.textContent      = hpSlider.value;      updateHlines();}});
+    hpSlider.addEventListener('input',      () => {{ hpLabel.textContent      = hpSlider.value;      fetchData();}});
     spdefSlider.addEventListener('input',   () => {{ spdefLabel.textContent   = spdefSlider.value;   fetchData(); }});
   </script>
 </body>
@@ -267,20 +288,24 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             global BASE_POKEMON
             assert BASE_POKEMON is not None
-            # defense = float(qs.get("defense", ["1.0"])[0])
-            # spdef = float(qs.get("spdef", ["1.0"])[0])
-            # hp = float(qs.get("hp", ["1.0"])[0])
-            hp = BASE_POKEMON.base_stats.hp
+            defensive_evs = PokemonEvs(
+                defn=int(qs.get("defense", ["0"])[0]),
+                spdef=int(qs.get("spdef", ["0"])[0]),
+                hp=int(qs.get("hp", ["0"])[0]),
+            )
+            hp = calculate_hp(BASE_POKEMON.base_stats.hp, defensive_evs.hp)
+            defense = calculate_stat(BASE_POKEMON.base_stats.defn, defensive_evs.defn)
+            spdef = calculate_stat(BASE_POKEMON.base_stats.spdef, defensive_evs.spdef)
             data = _get_damage_data()
             result_physical = get_adjusted_damage(
                 *data["Physical"],
-                defense=BASE_POKEMON.base_stats.defn,
+                defense=defense,
                 type1=BASE_POKEMON.type1,
                 type2=BASE_POKEMON.type2,
             )
             result_special = get_adjusted_damage(
                 *data["Special"],
-                defense=BASE_POKEMON.base_stats.spdef,
+                defense=spdef,
                 type1=BASE_POKEMON.type1,
                 type2=BASE_POKEMON.type2,
             )
