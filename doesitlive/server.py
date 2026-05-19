@@ -189,12 +189,20 @@ def build_page() -> bytes:
     .slider-wrap input[type=range] {{ flex: 1; }}
     .slider-wrap label {{ min-width: 10ch; }}
     .slider-wrap span {{ min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }}
+    .marker-row {{ display: flex; align-items: center; gap: 0.5rem; }}
+    .marker-row input[type=text] {{ flex: 1; padding: 0.25rem 0.5rem; font-size: 0.9rem; }}
+    .marker-dot {{ width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }}
   </style>
 </head>
 <body>
   <h1>Does It Live?</h1>
   <div class="chart-wrap">
     {chart_div}
+  </div>
+  <div class="slider-wrap">
+    <label for="pokemon-input">Pokemon</label>
+    <input id="pokemon-input" type="text" placeholder="Garchomp">
+    <button id="pokemon-submit">Submit</button>
   </div>
   <div class="slider-wrap">
     <label for="hp-slider">HP</label>
@@ -212,6 +220,11 @@ def build_page() -> bytes:
     <span id="spdef-label">0</span>
   </div>
 
+  <div style="width:90vw;max-width:900px;margin-top:1.5rem;display:flex;flex-direction:column;gap:0.5rem;">
+    <button id="add-marker-btn">Add Marker</button>
+    <div id="markers-container" style="display:flex;flex-direction:column;gap:0.5rem;"></div>
+  </div>
+
   <script>
     const defenseSlider = document.getElementById('defense-slider');
     const defenseLabel  = document.getElementById('defense-label');
@@ -219,8 +232,106 @@ def build_page() -> bytes:
     const hpLabel       = document.getElementById('hp-label');
     const spdefSlider   = document.getElementById('spdef-slider');
     const spdefLabel    = document.getElementById('spdef-label');
+
     // Plotly embeds the chart in the first div with class 'plotly-graph-div'
     const plotDiv = document.querySelector('.plotly-graph-div');
+
+    // ── Markers ──────────────────────────────────────────────────────────────
+    const MARKER_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#16a085'];
+    let markerSeq = 0;
+    const activeMarkers = []; // {{id, text, color}}
+
+    function buildMarkerData() {{
+      const shapes = [];
+      const hoverX = [], hoverY = [], hoverText = [], hoverColor = [];
+      const maxY = Math.max(...plotDiv.data.slice(0, 2).flatMap(t => t.y || [0]));
+
+      activeMarkers.forEach(({{text, color}}) => {{
+        for (const trace of plotDiv.data.slice(0, 2)) {{
+          if (!trace.customdata) continue;
+          trace.customdata.forEach((desc, i) => {{
+            if (!desc || !desc.toLowerCase().includes(text.toLowerCase())) return;
+            const x = trace.x[i];
+            shapes.push({{
+              type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper',
+              line: {{color, width: 1.5, dash: 'dot'}}
+            }});
+            // Invisible wide line segment to act as hover target for the vline
+            hoverX.push(x, x, null);
+            hoverY.push(0, maxY, null);
+            hoverText.push(desc, desc, null);
+            hoverColor.push(color, color, null);
+          }});
+        }}
+      }});
+
+      const hoverTrace = {{
+        x: hoverX, y: hoverY, text: hoverText,
+        mode: 'lines',
+        line: {{color: 'rgba(0,0,0,0)', width: 12}},
+        hovertemplate: '%{{text}}<extra></extra>',
+        showlegend: false,
+        type: 'scatter',
+      }};
+      return {{shapes, hoverTrace}};
+    }}
+
+    function applyMarkers() {{
+      const hp0 = plotDiv.layout.shapes[0];
+      const hp1 = plotDiv.layout.shapes[1];
+      const {{shapes: mShapes, hoverTrace}} = buildMarkerData();
+      Plotly.react(plotDiv, [...plotDiv.data.slice(0, 2), hoverTrace], {{
+        ...plotDiv.layout,
+        shapes: [hp0, hp1, ...mShapes],
+        annotations: [],
+      }});
+    }}
+
+    document.getElementById('add-marker-btn').addEventListener('click', () => {{
+      const id = markerSeq++;
+      const color = MARKER_COLORS[id % MARKER_COLORS.length];
+      const container = document.getElementById('markers-container');
+      const row = document.createElement('div');
+      row.className = 'marker-row';
+      row.dataset.markerId = id;
+
+      const dot = document.createElement('div');
+      dot.className = 'marker-dot';
+      dot.style.background = color;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'Search move descriptions…';
+
+      const submitBtn = document.createElement('button');
+      submitBtn.textContent = 'Submit';
+
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+
+      function submitMarker() {{
+        const text = input.value.trim();
+        if (!text) return;
+        const existing = activeMarkers.findIndex(m => m.id === id);
+        if (existing >= 0) activeMarkers[existing].text = text;
+        else activeMarkers.push({{id, text, color}});
+        applyMarkers();
+      }}
+
+      submitBtn.addEventListener('click', submitMarker);
+      input.addEventListener('keydown', e => {{ if (e.key === 'Enter') submitMarker(); }});
+      removeBtn.addEventListener('click', () => {{
+        const idx = activeMarkers.findIndex(m => m.id === id);
+        if (idx >= 0) activeMarkers.splice(idx, 1);
+        row.remove();
+        applyMarkers();
+      }});
+
+      row.append(dot, input, submitBtn, removeBtn);
+      container.appendChild(row);
+      input.focus();
+    }});
+    // ── End markers ───────────────────────────────────────────────────────────
 
     let pending = null;
 
@@ -228,13 +339,14 @@ def build_page() -> bytes:
       const defense = parseInt(defenseSlider.value);
       const hp      = parseInt(hpSlider.value);
       const spdef   = parseInt(spdefSlider.value);
+      const name = document.getElementById('pokemon-input').value.trim();
 
       // Debounce: cancel any in-flight request before firing a new one
       if (pending) {{ pending.abort(); }}
       const controller = new AbortController();
       pending = controller;
 
-      fetch(`/data?defense=${{defense}}&hp=${{hp}}&spdef=${{spdef}}`, {{ signal: controller.signal }})
+      fetch(`/data?name=${{name}}&defense=${{defense}}&hp=${{hp}}&spdef=${{spdef}}`, {{ signal: controller.signal }})
         .then(r => r.json())
         .then(data => {{
           pending = null;
@@ -247,7 +359,7 @@ def build_page() -> bytes:
             'shapes[0].y0': data.HP,           'shapes[0].y1': data.HP,
             'shapes[1].y0': Math.floor(data.HP / 2) + 1, 'shapes[1].y1': Math.floor(data.HP / 2) + 1,
           }});
-
+          applyMarkers();
         }})
         .catch(() => {{}});  // AbortError from cancelled requests is expected
     }}
@@ -255,6 +367,8 @@ def build_page() -> bytes:
     defenseSlider.addEventListener('input', () => {{ defenseLabel.textContent = defenseSlider.value; fetchData(); }});
     hpSlider.addEventListener('input',      () => {{ hpLabel.textContent      = hpSlider.value;      fetchData();}});
     spdefSlider.addEventListener('input',   () => {{ spdefLabel.textContent   = spdefSlider.value;   fetchData(); }});
+
+    document.getElementById('pokemon-submit').addEventListener('click', () => {{ fetchData(); }});
   </script>
 </body>
 </html>
@@ -280,19 +394,22 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self):
-        self.update_base_stats("Garchomp")
         if self.path in ("/", "/index.html"):
+            self.update_base_stats("Garchomp")
             body = build_page()
             self._respond(200, "text/html; charset=utf-8", body)
         elif self.path.startswith("/data"):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            global BASE_POKEMON
-            assert BASE_POKEMON is not None
+            name = qs.get("name", [None])[0]
+            if name is not None:
+                self.update_base_stats(name)
             defensive_evs = PokemonEvs(
                 defn=int(qs.get("defense", ["0"])[0]),
                 spdef=int(qs.get("spdef", ["0"])[0]),
                 hp=int(qs.get("hp", ["0"])[0]),
             )
+            global BASE_POKEMON
+            assert BASE_POKEMON is not None
             hp = calculate_hp(BASE_POKEMON.base_stats.hp, defensive_evs.hp)
             defense = calculate_stat(BASE_POKEMON.base_stats.defn, defensive_evs.defn)
             spdef = calculate_stat(BASE_POKEMON.base_stats.spdef, defensive_evs.spdef)
