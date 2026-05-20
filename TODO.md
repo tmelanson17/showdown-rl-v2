@@ -7,8 +7,11 @@
 
 ## Does It Live?
 
-- Need to add a defense adjustment, which can then adjust the damage graph. 
-- Add line for OHKO, 2HKO
+- Need to reset markers when the Pokemon changes
+- Marker color needs to be a different swath 
+- X for the specific location of the point
+- Reset counter when closing it
+
 
 ## Dataset Creation
 

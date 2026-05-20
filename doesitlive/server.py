@@ -19,6 +19,7 @@ from doesitlive.adjust_damages import adjust_damage
 # NOTE: scrape_stats depends on the requests + bs4 library
 from find_set.scrape_stats import get_base_stats, get_type
 from find_set.datatypes import PokemonStats, PokemonEvs
+from find_set.nature import get_boost
 
 PORT = 8080
 _DAMAGE_DATA: dict | None = None
@@ -112,7 +113,10 @@ def generate_plot() -> str:
     fig = go.Figure()
 
     for dfn, category in zip(
-        (BASE_POKEMON.base_stats.defn, BASE_POKEMON.base_stats.spdef),
+        (
+            calculate_stat(BASE_POKEMON.base_stats.defn, 0),
+            calculate_stat(BASE_POKEMON.base_stats.spdef, 0),
+        ),
         ("Physical", "Special"),
     ):
         damage_adj = get_adjusted_damage(
@@ -132,13 +136,14 @@ def generate_plot() -> str:
                 hovertemplate="%{customdata}<extra></extra>",
             )
         )
+    hp = calculate_hp(BASE_POKEMON.base_stats.hp, 0)
     fig.add_hline(
-        y=BASE_POKEMON.base_stats.hp,
+        y=hp,
         line_dash="dot",
         label=dict(text="OHKO", textposition="top left"),
     )
     fig.add_hline(
-        y=twohitko(BASE_POKEMON.base_stats.hp),
+        y=twohitko(hp),
         line_dash="dot",
         label=dict(text="2HKO", textposition="top left"),
     )
@@ -147,6 +152,7 @@ def generate_plot() -> str:
         xaxis_title="x",
         yaxis_title="y",
         hovermode="closest",
+        yaxis=dict(range=[0, 300]),
     )
 
     # full_html=False returns just the <div> + inline <script>, no <html> wrapper
@@ -219,6 +225,26 @@ def build_page() -> bytes:
     <input id="spdef-slider" type="range" min="0" max="32" step="1" value="0">
     <span id="spdef-label">0</span>
   </div>
+  <div class="slider-wrap">
+    <label for="nature-select">Nature</label>
+    <select id="nature-select">
+        <option value="Hardy" selected>Hardy (neutral)</option>
+        <option value="Bold">Bold (+Def / −Atk)</option>
+        <option value="Impish">Impish (+Def / −SpAtk)</option>
+        <option value="Lax">Lax (+Def / −SpDef)</option>
+        <option value="Relaxed">Relaxed (+Def / −Speed)</option>
+        <option value="Lonely">Lonely (−Def / +Atk)</option>
+        <option value="Hasty">Hasty (−Def / +Speed)</option>
+        <option value="Mild">Mild (−Def / +SpAtk)</option>
+        <option value="Gentle">Gentle (−Def / +SpDef)</option>
+        <option value="Calm">Calm (+SpDef / −Atk)</option>
+        <option value="Careful">Careful (+SpDef / −SpAtk)</option>
+        <option value="Sassy">Sassy (+SpDef / −Speed)</option>
+        <option value="Naughty">Naughty (−SpDef / +Atk)</option>
+        <option value="Naive">Naive (−SpDef / +Speed)</option>
+        <option value="Rash">Rash (−SpDef / +SpAtk)</option>
+    </select>
+  </div>
 
   <div style="width:90vw;max-width:900px;margin-top:1.5rem;display:flex;flex-direction:column;gap:0.5rem;">
     <button id="add-marker-btn">Add Marker</button>
@@ -232,6 +258,7 @@ def build_page() -> bytes:
     const hpLabel       = document.getElementById('hp-label');
     const spdefSlider   = document.getElementById('spdef-slider');
     const spdefLabel    = document.getElementById('spdef-label');
+    const natureSelect  = document.getElementById('nature-select');
 
     // Plotly embeds the chart in the first div with class 'plotly-graph-div'
     const plotDiv = document.querySelector('.plotly-graph-div');
@@ -339,14 +366,15 @@ def build_page() -> bytes:
       const defense = parseInt(defenseSlider.value);
       const hp      = parseInt(hpSlider.value);
       const spdef   = parseInt(spdefSlider.value);
-      const name = document.getElementById('pokemon-input').value.trim();
+      const name    = document.getElementById('pokemon-input').value.trim();
+      const nature  = natureSelect.value;
 
       // Debounce: cancel any in-flight request before firing a new one
       if (pending) {{ pending.abort(); }}
       const controller = new AbortController();
       pending = controller;
 
-      fetch(`/data?name=${{name}}&defense=${{defense}}&hp=${{hp}}&spdef=${{spdef}}`, {{ signal: controller.signal }})
+      fetch(`/data?name=${{name}}&defense=${{defense}}&hp=${{hp}}&spdef=${{spdef}}&nature=${{nature}}`, {{ signal: controller.signal }})
         .then(r => r.json())
         .then(data => {{
           pending = null;
@@ -364,9 +392,10 @@ def build_page() -> bytes:
         .catch(() => {{}});  // AbortError from cancelled requests is expected
     }}
 
-    defenseSlider.addEventListener('input', () => {{ defenseLabel.textContent = defenseSlider.value; fetchData(); }});
-    hpSlider.addEventListener('input',      () => {{ hpLabel.textContent      = hpSlider.value;      fetchData();}});
-    spdefSlider.addEventListener('input',   () => {{ spdefLabel.textContent   = spdefSlider.value;   fetchData(); }});
+    defenseSlider.addEventListener('input',  () => {{ defenseLabel.textContent = defenseSlider.value; fetchData(); }});
+    hpSlider.addEventListener('input',       () => {{ hpLabel.textContent      = hpSlider.value;      fetchData(); }});
+    spdefSlider.addEventListener('input',    () => {{ spdefLabel.textContent   = spdefSlider.value;   fetchData(); }});
+    natureSelect.addEventListener('change',  () => fetchData());
 
     document.getElementById('pokemon-submit').addEventListener('click', () => {{ fetchData(); }});
   </script>
@@ -410,9 +439,20 @@ class Handler(BaseHTTPRequestHandler):
             )
             global BASE_POKEMON
             assert BASE_POKEMON is not None
+            nature_name = qs.get("nature", ["Hardy"])[0]
+            def_mult = get_boost(nature_name, "def")
+            spdef_mult = get_boost(nature_name, "spdef")
             hp = calculate_hp(BASE_POKEMON.base_stats.hp, defensive_evs.hp)
-            defense = calculate_stat(BASE_POKEMON.base_stats.defn, defensive_evs.defn)
-            spdef = calculate_stat(BASE_POKEMON.base_stats.spdef, defensive_evs.spdef)
+            defense = calculate_stat(
+                BASE_POKEMON.base_stats.defn,
+                defensive_evs.defn,
+                nature_multiplier=def_mult,
+            )
+            spdef = calculate_stat(
+                BASE_POKEMON.base_stats.spdef,
+                defensive_evs.spdef,
+                nature_multiplier=spdef_mult,
+            )
             data = _get_damage_data()
             result_physical = get_adjusted_damage(
                 *data["Physical"],
