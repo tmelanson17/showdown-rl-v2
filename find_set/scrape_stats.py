@@ -54,6 +54,8 @@ _FORM_STARTERS = {
     "midnight",
 }
 
+_FUZZY_SETS = [{"hisui", "hisuian"}, {"galar", "galarian"}, {"alola", "alolan"}]
+
 
 def _parse_name(name: str) -> tuple[str, str | None]:
     """Return (url_slug, form_keyword) from a Showdown-style name.
@@ -112,6 +114,13 @@ def _types_from_panel(panel) -> tuple[Type, Type | None]:
     raise ValueError("Type row not found in panel")
 
 
+def _fuzzy_match(form_name: str, tab_name: list[str]) -> bool:
+    for fuzzy_set in _FUZZY_SETS:
+        if form_name in fuzzy_set and tab_name in fuzzy_set:
+            return True
+    return False
+
+
 def _resolve_panel(name: str, soup, tabset):
     """Return the correct panel BeautifulSoup element for the given parsed name."""
     _, form = _parse_name(name)
@@ -129,6 +138,11 @@ def _resolve_panel(name: str, soup, tabset):
         tab_words = set(tab.get_text(strip=True).lower().split())
         if form_words.issubset(tab_words):
             return panel
+        # For regional forms
+        if len(form_words) == 1:
+            for word in tab_words:
+                if _fuzzy_match(form.lower(), word):
+                    return panel
 
     available = [t.get_text(strip=True) for t in tabs]
     raise ValueError(f"Form '{form}' not found for {name}. Available tabs: {available}")
@@ -169,6 +183,10 @@ if __name__ == "__main__":
         ),
         ("Kommo-o", Stat(hp=75, atk=110, defn=125, spatk=100, spdef=105, speed=85)),
         ("Floette-Mega", Stat(hp=74, atk=85, defn=87, spatk=155, spdef=148, speed=102)),
+        (
+            "Decidueye-Hisui",
+            Stat(hp=88, atk=112, defn=80, spatk=95, spdef=95, speed=60),
+        ),
     ]
 
     type_tests = [
